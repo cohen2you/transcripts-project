@@ -243,6 +243,74 @@ ${transcript}`;
   }
 });
 
+// Verify speaker attribution endpoint
+app.post('/api/verify-speakers', async (req: Request, res: Response) => {
+  try {
+    const { transcript } = req.body;
+
+    if (!transcript) {
+      return res.status(400).json({ error: 'No transcript provided' });
+    }
+
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ error: 'OpenAI API key not configured' });
+    }
+
+    const systemPrompt = `You are a transcript editor specialized in verifying and correcting speaker attribution in earnings call transcripts.
+
+Your ONLY job is to ensure the correct person is speaking at the correct time. Focus on:
+
+1. After operator introduces someone, that person MUST be the next speaker
+2. When an analyst asks a question, the executive's answer should have the executive's label (not the analyst's)
+3. Follow-up questions need proper analyst speaker labels inserted
+4. Multi-part Q&A sessions need clear speaker transitions
+
+CRITICAL RULES:
+- DO NOT change any words in the transcript
+- DO NOT change formatting, bolding, or structure
+- DO NOT fix spelling or titles
+- ONLY add or correct speaker labels: <strong>Name</strong> (Title)
+- Look for these error patterns:
+  * Operator introduces "John from ABC" but "Mary" speaks next → FIX to John
+  * Analyst asks question, executive's answer is under analyst's name → INSERT executive label
+  * "Great. And my follow-up is..." missing speaker label → INSERT analyst label
+  * Executive addressing analyst by name ("John?") but still under analyst label → INSERT executive label
+
+Preserve all <strong> tags and HTML formatting exactly as provided.
+
+Return ONLY the corrected transcript with no additional commentary or explanation.`;
+
+    const userPrompt = `Please verify and correct ONLY the speaker attributions in this transcript. Do not change any words or formatting.
+
+Transcript:
+${transcript}`;
+
+    // Call OpenAI API
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.1,
+    });
+
+    const verifiedTranscript = completion.choices[0].message.content;
+    const tokensUsed = completion.usage?.total_tokens || 0;
+
+    res.json({
+      success: true,
+      verified_transcript: verifiedTranscript,
+      tokens_used: tokensUsed,
+    });
+  } catch (error: any) {
+    console.error('Error verifying speakers:', error);
+    res.status(500).json({ 
+      error: error.message || 'Failed to verify speakers' 
+    });
+  }
+});
+
 // Check name spelling endpoint
 app.post('/api/check-names', async (req: Request, res: Response) => {
   try {

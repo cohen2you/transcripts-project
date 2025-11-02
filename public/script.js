@@ -5,6 +5,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const outputArea = document.getElementById('outputArea');
     const copyBtn = document.getElementById('copyBtn');
     const downloadBtn = document.getElementById('downloadBtn');
+    const verifySpeakersBtn = document.getElementById('verifySpeakersBtn');
     const checkNamesBtn = document.getElementById('checkNamesBtn');
     const segmentBtn = document.getElementById('segmentBtn');
     const addDisclaimersBtn = document.getElementById('addDisclaimersBtn');
@@ -57,6 +58,7 @@ document.addEventListener('DOMContentLoaded', function() {
             stats.style.display = 'block';
             
             // Show action buttons
+            verifySpeakersBtn.style.display = 'inline-block';
             checkNamesBtn.style.display = 'inline-block';
             segmentBtn.style.display = 'inline-block';
             addDisclaimersBtn.style.display = 'inline-block';
@@ -70,6 +72,59 @@ document.addEventListener('DOMContentLoaded', function() {
             processBtn.disabled = false;
             processBtn.querySelector('.btn-text').style.display = 'inline-block';
             processBtn.querySelector('.btn-loader').style.display = 'none';
+        }
+    });
+
+    // Verify speaker attribution
+    verifySpeakersBtn.addEventListener('click', async function() {
+        if (!cleanedTranscriptText) {
+            showError('No transcript to verify.');
+            return;
+        }
+
+        // Show loading state
+        verifySpeakersBtn.disabled = true;
+        verifySpeakersBtn.querySelector('.btn-text').style.display = 'none';
+        verifySpeakersBtn.querySelector('.btn-loader').style.display = 'inline-block';
+        hideError();
+
+        try {
+            const response = await fetch('/api/verify-speakers', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ transcript: cleanedTranscriptText })
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || 'Speaker verification failed');
+            }
+
+            // Update with verified transcript
+            cleanedTranscriptText = data.verified_transcript;
+            outputArea.innerHTML = cleanedTranscriptText.replace(/\n/g, '<br>');
+            
+            // Update token count
+            totalTokensUsed += data.tokens_used;
+            tokensUsed.textContent = totalTokensUsed.toLocaleString();
+
+            // Show success message briefly
+            const originalText = verifySpeakersBtn.querySelector('.btn-text').textContent;
+            verifySpeakersBtn.querySelector('.btn-text').textContent = '✓ Speakers Verified!';
+            setTimeout(() => {
+                verifySpeakersBtn.querySelector('.btn-text').textContent = originalText;
+            }, 3000);
+
+        } catch (error) {
+            showError('Error: ' + error.message);
+        } finally {
+            // Reset button state
+            verifySpeakersBtn.disabled = false;
+            verifySpeakersBtn.querySelector('.btn-text').style.display = 'inline-block';
+            verifySpeakersBtn.querySelector('.btn-loader').style.display = 'none';
         }
     });
 
@@ -218,6 +273,7 @@ document.addEventListener('DOMContentLoaded', function() {
         cleanedTranscriptText = '';
         totalTokensUsed = 0;
         hasDisclaimers = false;
+        verifySpeakersBtn.style.display = 'none';
         checkNamesBtn.style.display = 'none';
         segmentBtn.style.display = 'none';
         addDisclaimersBtn.style.display = 'none';
