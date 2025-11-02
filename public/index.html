@@ -43,10 +43,6 @@
                         <span class="btn-text">👥 Verify Speakers</span>
                         <span class="btn-loader" style="display: none;">Verifying...</span>
                     </button>
-                    <button id="checkNamesBtn" class="btn btn-warning" style="display: none;">
-                        <span class="btn-text">✓ Check Name Spelling</span>
-                        <span class="btn-loader" style="display: none;">Checking...</span>
-                    </button>
                     <button id="segmentBtn" class="btn btn-info" style="display: none;">
                         <span class="btn-text">📋 Segment Transcript</span>
                         <span class="btn-loader" style="display: none;">Segmenting...</span>
@@ -61,6 +57,11 @@
         </div>
 
         <div id="errorMsg" class="error-message" style="display: none;"></div>
+
+        <div id="changeLog" class="change-log" style="display: none;">
+            <h3>📝 Changes Made</h3>
+            <div id="changeLogContent"></div>
+        </div>
     </div>
 
     <script src="script.js"></script>

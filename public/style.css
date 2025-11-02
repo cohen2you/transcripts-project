@@ -205,6 +205,54 @@ textarea:focus {
     text-decoration: underline;
 }
 
+.change-log {
+    margin: 30px 40px;
+    padding: 20px;
+    background: #f8f9fa;
+    border-radius: 8px;
+    border-left: 4px solid #17a2b8;
+}
+
+.change-log h3 {
+    color: #333;
+    font-size: 1.3rem;
+    margin-bottom: 15px;
+    font-weight: 600;
+}
+
+.change-log-entry {
+    margin-bottom: 15px;
+    padding: 12px;
+    background: white;
+    border-radius: 6px;
+    border-left: 3px solid #667eea;
+}
+
+.change-log-entry h4 {
+    color: #667eea;
+    font-size: 1rem;
+    margin: 0 0 8px 0;
+    font-weight: 600;
+}
+
+.change-log-entry p {
+    margin: 5px 0;
+    color: #555;
+    font-size: 0.95rem;
+    line-height: 1.5;
+}
+
+.change-log-entry ul {
+    margin: 8px 0;
+    padding-left: 20px;
+}
+
+.change-log-entry li {
+    color: #555;
+    font-size: 0.9rem;
+    margin: 4px 0;
+}
+
 .error-message {
     background: #f8d7da;
     color: #721c24;

@@ -6,16 +6,39 @@ document.addEventListener('DOMContentLoaded', function() {
     const copyBtn = document.getElementById('copyBtn');
     const downloadBtn = document.getElementById('downloadBtn');
     const verifySpeakersBtn = document.getElementById('verifySpeakersBtn');
-    const checkNamesBtn = document.getElementById('checkNamesBtn');
     const segmentBtn = document.getElementById('segmentBtn');
     const addDisclaimersBtn = document.getElementById('addDisclaimersBtn');
     const errorMsg = document.getElementById('errorMsg');
     const stats = document.getElementById('stats');
     const tokensUsed = document.getElementById('tokensUsed');
+    const changeLog = document.getElementById('changeLog');
+    const changeLogContent = document.getElementById('changeLogContent');
 
     let cleanedTranscriptText = '';
     let totalTokensUsed = 0;
     let hasDisclaimers = false;
+
+    function addChangeLogEntry(title, changes) {
+        const entry = document.createElement('div');
+        entry.className = 'change-log-entry';
+        
+        const timestamp = new Date().toLocaleTimeString();
+        let html = `<h4>${title} (${timestamp})</h4>`;
+        
+        if (typeof changes === 'string') {
+            html += `<p>${changes}</p>`;
+        } else if (Array.isArray(changes)) {
+            html += '<ul>';
+            changes.forEach(change => {
+                html += `<li>${change}</li>`;
+            });
+            html += '</ul>';
+        }
+        
+        entry.innerHTML = html;
+        changeLogContent.appendChild(entry);
+        changeLog.style.display = 'block';
+    }
 
     // Process transcript
     processBtn.addEventListener('click', async function() {
@@ -56,10 +79,19 @@ document.addEventListener('DOMContentLoaded', function() {
             totalTokensUsed = data.tokens_used;
             tokensUsed.textContent = totalTokensUsed.toLocaleString();
             stats.style.display = 'block';
+
+            // Log changes
+            const changes = [
+                'Removed standalone "0" numbers after speaker labels',
+                'Applied bold formatting to speaker names',
+                'Converted analyst labels to company-only format (e.g., "Goldman Sachs Analyst")',
+                'Fixed obvious analyst firm name misspellings',
+                'Standardized speaker label format'
+            ];
+            addChangeLogEntry('Clean Transcript', changes);
             
             // Show action buttons
             verifySpeakersBtn.style.display = 'inline-block';
-            checkNamesBtn.style.display = 'inline-block';
             segmentBtn.style.display = 'inline-block';
             addDisclaimersBtn.style.display = 'inline-block';
             copyBtn.style.display = 'inline-block';
@@ -80,6 +112,13 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!cleanedTranscriptText) {
             showError('No transcript to verify.');
             return;
+        }
+
+        // Check transcript size and warn if large
+        const charCount = cleanedTranscriptText.length;
+        if (charCount > 40000) {
+            const proceed = confirm(`This transcript is ${Math.round(charCount/1000)}K characters. Speaker verification may take 60-120 seconds. Continue?`);
+            if (!proceed) return;
         }
 
         // Show loading state
@@ -110,6 +149,13 @@ document.addEventListener('DOMContentLoaded', function() {
             // Update token count
             totalTokensUsed += data.tokens_used;
             tokensUsed.textContent = totalTokensUsed.toLocaleString();
+
+            // Log changes
+            if (data.changes_summary) {
+                addChangeLogEntry('Verify Speakers', data.changes_summary);
+            } else {
+                addChangeLogEntry('Verify Speakers', 'Verified speaker attributions and corrected any misplaced labels');
+            }
 
             // Show success message briefly
             const originalText = verifySpeakersBtn.querySelector('.btn-text').textContent;
@@ -213,59 +259,6 @@ document.addEventListener('DOMContentLoaded', function() {
         addDisclaimersBtn.disabled = true;
     });
 
-    // Check name spelling
-    checkNamesBtn.addEventListener('click', async function() {
-        if (!cleanedTranscriptText) {
-            showError('No transcript to check.');
-            return;
-        }
-
-        // Show loading state
-        checkNamesBtn.disabled = true;
-        checkNamesBtn.querySelector('.btn-text').style.display = 'none';
-        checkNamesBtn.querySelector('.btn-loader').style.display = 'inline-block';
-        hideError();
-
-        try {
-            const response = await fetch('/api/check-names', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ transcript: cleanedTranscriptText })
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || 'Name checking failed');
-            }
-
-            // Update with corrected transcript
-            cleanedTranscriptText = data.corrected_transcript;
-            outputArea.innerHTML = cleanedTranscriptText.replace(/\n/g, '<br>');
-            
-            // Update token count
-            totalTokensUsed += data.tokens_used;
-            tokensUsed.textContent = totalTokensUsed.toLocaleString();
-
-            // Show success message briefly
-            const originalText = checkNamesBtn.querySelector('.btn-text').textContent;
-            checkNamesBtn.querySelector('.btn-text').textContent = '✓ Names Verified!';
-            setTimeout(() => {
-                checkNamesBtn.querySelector('.btn-text').textContent = originalText;
-            }, 3000);
-
-        } catch (error) {
-            showError('Error: ' + error.message);
-        } finally {
-            // Reset button state
-            checkNamesBtn.disabled = false;
-            checkNamesBtn.querySelector('.btn-text').style.display = 'inline-block';
-            checkNamesBtn.querySelector('.btn-loader').style.display = 'none';
-        }
-    });
-
     // Clear all
     clearBtn.addEventListener('click', function() {
         rawTranscript.value = '';
@@ -274,7 +267,6 @@ document.addEventListener('DOMContentLoaded', function() {
         totalTokensUsed = 0;
         hasDisclaimers = false;
         verifySpeakersBtn.style.display = 'none';
-        checkNamesBtn.style.display = 'none';
         segmentBtn.style.display = 'none';
         addDisclaimersBtn.style.display = 'none';
         addDisclaimersBtn.disabled = false;
@@ -282,44 +274,38 @@ document.addEventListener('DOMContentLoaded', function() {
         copyBtn.style.display = 'none';
         downloadBtn.style.display = 'none';
         stats.style.display = 'none';
+        changeLog.style.display = 'none';
+        changeLogContent.innerHTML = '';
         hideError();
     });
 
     // Copy to clipboard
     copyBtn.addEventListener('click', async function() {
+        console.log('Copy button clicked!');
+        console.log('cleanedTranscriptText length:', cleanedTranscriptText.length);
+        
+        if (!cleanedTranscriptText) {
+            showError('No transcript to copy.');
+            return;
+        }
+
         try {
-            // If disclaimers are present, copy as HTML for WordPress compatibility
-            if (hasDisclaimers) {
-                // Convert newlines to <br> and wrap in paragraph tags for better WordPress formatting
-                const htmlContent = cleanedTranscriptText
-                    .replace(/\n\n/g, '</p><p>')
-                    .replace(/\n/g, '<br>');
-                
-                const blob = new Blob([htmlContent], { type: 'text/html' });
-                const clipboardItem = new ClipboardItem({ 'text/html': blob });
-                await navigator.clipboard.write([clipboardItem]);
-            } else {
-                // Regular text copy
-                await navigator.clipboard.writeText(cleanedTranscriptText);
-            }
+            console.log('Attempting to copy...');
+            // Always copy as HTML to preserve bold formatting for WordPress
+            const htmlContent = cleanedTranscriptText;
+            
+            // Simple text copy (most reliable)
+            await navigator.clipboard.writeText(htmlContent);
+            console.log('Copy successful!');
             
             const originalText = copyBtn.textContent;
-            copyBtn.textContent = 'Copied!';
+            copyBtn.textContent = '✓ Copied!';
             setTimeout(() => {
                 copyBtn.textContent = originalText;
             }, 2000);
         } catch (error) {
-            // Fallback to plain text if HTML copy fails
-            try {
-                await navigator.clipboard.writeText(cleanedTranscriptText);
-                const originalText = copyBtn.textContent;
-                copyBtn.textContent = 'Copied!';
-                setTimeout(() => {
-                    copyBtn.textContent = originalText;
-                }, 2000);
-            } catch (fallbackError) {
-                showError('Failed to copy to clipboard');
-            }
+            console.error('Copy error:', error);
+            showError('Failed to copy to clipboard. Error: ' + error.message);
         }
     });
 

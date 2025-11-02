@@ -21,6 +21,12 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, '../public')));
 
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${req.path}`);
+  next();
+});
+
 // Serve the main page
 app.get('/', (req: Request, res: Response) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
@@ -29,6 +35,7 @@ app.get('/', (req: Request, res: Response) => {
 // Process transcript endpoint
 app.post('/api/process', async (req: Request, res: Response) => {
   try {
+    console.log('📝 Processing transcript...');
     const { transcript } = req.body;
 
     if (!transcript) {
@@ -38,58 +45,49 @@ app.post('/api/process', async (req: Request, res: Response) => {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: 'OpenAI API key not configured' });
     }
+    
+    console.log(`   Transcript length: ${transcript.length} characters`);
 
-    // Create the prompt for OpenAI
     const systemPrompt = `You are a transcript editor specialized in cleaning earnings call transcripts. 
 Your ONLY job is to:
-1. Correct any misspelled names of speakers
-2. Standardize and correct job titles/roles in parentheses
-3. Fix obvious formatting issues in speaker labels
-4. Remove any standalone "0" numbers that appear after speaker labels
-5. Make speaker names bold using HTML tags: <strong>Name</strong> (Title)
-6. Fix misplaced speaker labels - when someone is being INTRODUCED by the operator but isn't speaking yet
+1. Remove any standalone "0" numbers that appear after speaker labels
+2. Format speaker labels with HTML bold tags: <strong>Name</strong>
+3. Use COMPANY NAME ONLY for analysts (NO person names)
+4. Fix OBVIOUS analyst firm name misspellings (e.g., "Truro Securities" → "Truist Securities")
+5. Fix obvious formatting issues in speaker labels
 
 CRITICAL RULES:
 - DO NOT change, modify, or correct ANY of the actual spoken content/dialogue
 - DO NOT add, remove, or modify any words in the transcript body
-- ONLY fix speaker names and titles (the parts like "Name(Title)")
-- Bold ONLY the speaker name using <strong> tags, NOT the title in parentheses
-- Remove any "0" that appears on its own line after speaker labels
 - Preserve all line breaks, spacing, and structure exactly as provided
-- If a name or title looks correct, leave it unchanged
+- Only fix OBVIOUS company misspellings (JP Morgon→JP Morgan, Goldman Sacks→Goldman Sachs, Truro→Truist)
+- DO NOT change executive/person names
+- Use HTML tags <strong></strong> NOT markdown ** for bold
 
-SPECIAL CASE - Misplaced speaker labels and extracting company names:
-When the operator introduces someone, that person MUST be the next speaker (not someone else).
+SPEAKER LABEL FORMATS (CRITICAL - FOLLOW EXACTLY):
 
-Common Error Pattern to Fix:
-Operator says: "Our next question is from Jeffrey Bernstein with Barclays. Please proceed."
-WRONG next speaker: Rob Lynch (CEO) - This is incorrect!
-CORRECT next speaker: Jeffrey Bernstein (Barclays) - The person who was just introduced!
+For ANALYSTS (people from investment firms asking questions):
+WRONG: Jake Bartlett (Truro Securities Analyst)
+WRONG: Jake Bartlett (Equity Analyst at Truro Securities)  
+WRONG: <strong>Jake Bartlett</strong> (Truro Securities)
+RIGHT: <strong>Truro Securities Analyst</strong>
 
-Example Fix:
-Bad:
-<strong>Operator</strong>
+Pattern: Remove the person's name completely. Only use: <strong>[Company Name] Analyst</strong>
 
-Our next question is from Jeffrey Bernstein with Barclays. Please proceed.
+More examples:
+- "Jeffrey Bernstein with Barclays" → <strong>Barclays Analyst</strong>
+- "Brian Vaccaro from Goldman Sachs" → <strong>Goldman Sachs Analyst</strong>
+- "Jake Bartlett(Equity Analyst at Truro Securities)" → <strong>Truro Securities Analyst</strong>
 
-<strong>Rob Lynch</strong> (Chief Executive Officer)
+For EXECUTIVES (company employees like CEO, CFO):
+- Keep the person's name + title
+- <strong>Rob Lynch</strong> (Chief Executive Officer)
+- <strong>Katie Fogarty</strong> (Chief Financial Officer)
 
-Great, thank you. Just wanted to build on...
+For OPERATOR:
+- <strong>Operator</strong>
 
-Good (Fix it to):
-<strong>Operator</strong>
-
-Our next question is from Jeffrey Bernstein with Barclays. Please proceed.
-
-<strong>Jeffrey Bernstein</strong> (Barclays)
-
-Great, thank you. Just wanted to build on...
-
-CRITICAL RULES:
-- The person introduced by the operator MUST be the next speaker
-- Extract company names from introductions (e.g., "with Barclays" → add "(Barclays)" to speaker label)
-- If a different name appears after an introduction, it's almost always an error - fix it to match who was introduced
-- Always keep the operator's full introduction intact including "Please proceed" or "Please go ahead"
+CRITICAL: For analysts, DELETE the person's name entirely. Only keep company + "Analyst"
 
 ANOTHER COMMON ERROR - Question/Answer transitions:
 When an analyst asks a question, the company executive's ANSWER often gets incorrectly labeled as the analyst still speaking.
@@ -117,28 +115,28 @@ Brian? I had a call with Stephanie last night...
 
 IMPORTANT: Insert the appropriate company executive speaker label (CEO, CFO, etc.) when you detect an answer to an analyst's question that's incorrectly under the analyst's name.
 
-ANOTHER COMMON ERROR - Missing speaker labels for follow-up questions:
-After an executive answers, the analyst often asks a follow-up question BUT the speaker label is missing entirely.
+ANOTHER COMMON ERROR - Missing analyst labels for follow-up questions:
+After an executive answers, the analyst often asks a follow-up question BUT the speaker label is missing.
 
 Pattern to detect:
-- Executive finishes answering a question
-- Text continues with phrases like "Great. And then..." or "Thanks. My follow-up is..." or "And I have a follow up"
-- This is clearly the ANALYST asking another question, not the executive still talking
-- The analyst's name was recently introduced by the operator
+- Executive finishes answering
+- Text continues with "Great. And then..." or "Thanks. My follow-up is..." or "Understood..."
+- This is the ANALYST asking another question
+- Use the company name that was recently introduced
 
 Example Error:
 <strong>Katie Fogarty</strong> (Chief Financial Officer)
 
 ...without having to lean on a significant amount of price to offset the beef market.
 
-Great. And then I had another question about the labor savings... [This is Jake asking a follow-up, NOT Katie!]
+Great. And then I had another question about the labor savings... [This is the analyst!]
 
 Should be fixed to:
 <strong>Katie Fogarty</strong> (Chief Financial Officer)
 
 ...without having to lean on a significant amount of price to offset the beef market.
 
-<strong>Jake Bartlett</strong> (Truro Securities)
+<strong>Truist Securities Analyst</strong>
 
 Great. And then I had another question about the labor savings...
 
@@ -146,7 +144,7 @@ Great. And then I had another question about the labor savings...
 
 So one of the big opportunity untapped opportunities is on equipment...
 
-IMPORTANT: Insert analyst speaker labels when you detect follow-up questions that are missing labels. Look for transitions like "Great. And then...", "Thanks. My follow-up...", "And I have a follow up", etc.
+IMPORTANT: For analyst follow-ups, insert <strong>Company Name Analyst</strong> label using the company from the operator's introduction.
 
 Return ONLY the corrected transcript with no additional commentary or explanation.`;
 
@@ -165,8 +163,20 @@ ${transcript}`;
       temperature: 0.1,
     });
 
-    const cleanedTranscript = completion.choices[0].message.content;
+    let cleanedTranscript = completion.choices[0].message.content || '';
     const tokensUsed = completion.usage?.total_tokens || 0;
+
+    // Remove markdown code fences if present (multiple patterns)
+    cleanedTranscript = cleanedTranscript
+      .replace(/^```html\s*/gi, '')  // ```html at start
+      .replace(/^```\s*/g, '')        // ``` at start
+      .replace(/\s*```$/g, '')        // ``` at end
+      .trim();
+
+    // Convert any markdown bold (**text**) to HTML (<strong>text</strong>)
+    cleanedTranscript = cleanedTranscript.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+    console.log(`   ✅ Cleaned! Tokens used: ${tokensUsed}`);
 
     res.json({
       success: true,
@@ -184,6 +194,7 @@ ${transcript}`;
 // Segment transcript endpoint
 app.post('/api/segment', async (req: Request, res: Response) => {
   try {
+    console.log('📋 Segmenting transcript...');
     const { transcript } = req.body;
 
     if (!transcript) {
@@ -193,28 +204,21 @@ app.post('/api/segment', async (req: Request, res: Response) => {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: 'OpenAI API key not configured' });
     }
+    
+    console.log(`   Transcript length: ${transcript.length} characters`);
 
-    const systemPrompt = `You are a transcript editor specializing in improving readability of earnings call transcripts.
+    const systemPrompt = `Add paragraph breaks to improve readability. 
 
-Your job is to:
-1. Break up long blocks of text into logical, readable paragraphs
-2. Insert paragraph breaks at natural topic changes or transitions
-3. Make the transcript easier to read while keeping it professional
+Rules:
+- DO NOT change any words
+- ONLY add line breaks at logical topic changes
+- Break every 3-5 sentences
+- Preserve all <strong> tags and formatting
 
-CRITICAL RULES:
-- DO NOT change, add, or remove ANY words from the transcript
-- DO NOT modify speaker names or formatting
-- ONLY add paragraph breaks (line breaks) at logical points
-- Preserve all <strong> tags and existing structure
-- Each paragraph should be 3-5 sentences or a complete thought
-- Break at topic changes, question transitions, or natural pauses
-- Keep speaker labels exactly as they are
+Return the segmented transcript only.`;
 
-Return ONLY the segmented transcript with no additional commentary or explanation.`;
+    const userPrompt = `Add paragraph breaks to this transcript:
 
-    const userPrompt = `Please segment this transcript into logical, readable paragraphs without changing any words.
-
-Transcript:
 ${transcript}`;
 
     // Call OpenAI API
@@ -227,8 +231,15 @@ ${transcript}`;
       temperature: 0.1,
     });
 
-    const segmentedTranscript = completion.choices[0].message.content;
+    let segmentedTranscript = completion.choices[0].message.content || '';
     const tokensUsed = completion.usage?.total_tokens || 0;
+
+    // Remove markdown code fences if present (multiple patterns)
+    segmentedTranscript = segmentedTranscript
+      .replace(/^```html\s*/gi, '')
+      .replace(/^```\s*/g, '')
+      .replace(/\s*```$/g, '')
+      .trim();
 
     res.json({
       success: true,
@@ -246,6 +257,7 @@ ${transcript}`;
 // Verify speaker attribution endpoint
 app.post('/api/verify-speakers', async (req: Request, res: Response) => {
   try {
+    console.log('👥 Verifying speaker attributions...');
     const { transcript } = req.body;
 
     if (!transcript) {
@@ -255,30 +267,66 @@ app.post('/api/verify-speakers', async (req: Request, res: Response) => {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: 'OpenAI API key not configured' });
     }
+    
+    console.log(`   Transcript length: ${transcript.length} characters`);
 
-    const systemPrompt = `You are a transcript editor specialized in verifying and correcting speaker attribution in earnings call transcripts.
+    const systemPrompt = `You are a transcript editor fixing speaker attribution errors in earnings calls.
 
-Your ONLY job is to ensure the correct person is speaking at the correct time. Focus on:
+CRITICAL ERROR #1 - Wrong speaker after operator introduction:
+When operator introduces an analyst, the VERY NEXT speaker MUST be that analyst, NOT a company executive.
 
-1. After operator introduces someone, that person MUST be the next speaker
-2. When an analyst asks a question, the executive's answer should have the executive's label (not the analyst's)
-3. Follow-up questions need proper analyst speaker labels inserted
-4. Multi-part Q&A sessions need clear speaker transitions
+Example ERROR to fix:
+<strong>Operator</strong>
 
-CRITICAL RULES:
-- DO NOT change any words in the transcript
-- DO NOT change formatting, bolding, or structure
-- DO NOT fix spelling or titles
-- ONLY add or correct speaker labels: <strong>Name</strong> (Title)
-- Look for these error patterns:
-  * Operator introduces "John from ABC" but "Mary" speaks next → FIX to John
-  * Analyst asks question, executive's answer is under analyst's name → INSERT executive label
-  * "Great. And my follow-up is..." missing speaker label → INSERT analyst label
-  * Executive addressing analyst by name ("John?") but still under analyst label → INSERT executive label
+Our next question is from Jeffrey Bernstein with Barclays. Please proceed.
 
-Preserve all <strong> tags and HTML formatting exactly as provided.
+<strong>Rob Lynch</strong> (Chief Executive Officer)
 
-Return ONLY the corrected transcript with no additional commentary or explanation.`;
+Great, thank you. Just wanted to build on... [analyst's question continues]
+
+This is WRONG because:
+- Operator introduced Jeffrey Bernstein with Barclays
+- But Rob Lynch (CEO) is labeled as speaking
+- "Great, thank you. Just wanted to build on..." is clearly the ANALYST asking a question, not the CEO
+
+CORRECT to:
+<strong>Operator</strong>
+
+Our next question is from Jeffrey Bernstein with Barclays. Please proceed.
+
+<strong>Barclays Analyst</strong>
+
+Great, thank you. Just wanted to build on... [analyst's question]
+
+<strong>Rob Lynch</strong> (Chief Executive Officer)
+
+Yeah, I mean our, you know, our product innovation... [CEO's answer]
+
+RULE: Person introduced by operator = next speaker. If you see an executive name there instead, DELETE it and insert the analyst's company label.
+
+CRITICAL ERROR #2 - Executive's answer under analyst's label:
+When analyst asks question, executive's answer often appears under analyst's name.
+Look for: executive addressing analyst by name, "we/our" company perspective.
+
+CRITICAL ERROR #3 - Missing analyst label for follow-ups:
+When executive finishes answering and text continues with "Understood...", "Thanks...", "Great...", "Right..." → This is analyst asking follow-up.
+
+LABEL FORMAT:
+- Analysts: <strong>Company Analyst</strong> (extract company from operator introduction)
+- Executives: <strong>Person Name</strong> (Title)
+
+RULES:
+- DO NOT change any words
+- ONLY add/fix speaker labels
+- Preserve all HTML formatting
+
+OUTPUT FORMAT:
+Return the corrected transcript text, then add:
+---CHANGES---
+Then list each fix you made, like:
+- Changed "Wrong Name" to "Correct Label" after operator introduced them
+- Added "Company Analyst" label for follow-up question
+OR write: No errors found`;
 
     const userPrompt = `Please verify and correct ONLY the speaker attributions in this transcript. Do not change any words or formatting.
 
@@ -295,13 +343,43 @@ ${transcript}`;
       temperature: 0.1,
     });
 
-    const verifiedTranscript = completion.choices[0].message.content;
+    let fullResponse = completion.choices[0].message.content || '';
     const tokensUsed = completion.usage?.total_tokens || 0;
+
+    // Remove markdown code fences if present (multiple patterns)
+    fullResponse = fullResponse
+      .replace(/^```html\s*/gi, '')
+      .replace(/^```\s*/g, '')
+      .replace(/\s*```$/g, '')
+      .trim();
+
+    // Split response into transcript and changes
+    let verifiedTranscript = fullResponse;
+    let changesSummary = 'Verified speaker attributions and corrected any misplaced labels';
+    
+    if (fullResponse.includes('---CHANGES---')) {
+      const parts = fullResponse.split('---CHANGES---');
+      verifiedTranscript = parts[0].trim();
+      const changesText = parts[1].trim();
+      
+      // Remove template placeholder text if AI included it
+      verifiedTranscript = verifiedTranscript.replace(/^\[Corrected transcript\]\s*/i, '');
+      
+      if (changesText && changesText !== 'No speaker attribution errors found.' && changesText !== 'No errors found') {
+        changesSummary = changesText;
+      } else {
+        changesSummary = 'No speaker attribution errors found';
+      }
+    }
+
+    console.log(`   ✅ Speakers verified! Tokens used: ${tokensUsed}`);
+    console.log(`   Changes: ${changesSummary.substring(0, 100)}...`);
 
     res.json({
       success: true,
       verified_transcript: verifiedTranscript,
       tokens_used: tokensUsed,
+      changes_summary: changesSummary,
     });
   } catch (error: any) {
     console.error('Error verifying speakers:', error);
@@ -311,9 +389,10 @@ ${transcript}`;
   }
 });
 
-// Check name spelling endpoint
-app.post('/api/check-names', async (req: Request, res: Response) => {
+// Check company names endpoint (analyst firms only)
+app.post('/api/check-company-names', async (req: Request, res: Response) => {
   try {
+    console.log('🏢 Checking analyst company names...');
     const { transcript } = req.body;
 
     if (!transcript) {
@@ -323,26 +402,35 @@ app.post('/api/check-names', async (req: Request, res: Response) => {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: 'OpenAI API key not configured' });
     }
+    
+    console.log(`   Transcript length: ${transcript.length} characters`);
 
-    const systemPrompt = `You are an expert fact-checker specializing in verifying proper names of people and companies in earnings call transcripts.
+    const systemPrompt = `You are a financial company name checker for earnings call transcripts.
 
-Your job is to:
-1. Identify all person names and company names in the transcript
-2. Verify correct spelling based on your knowledge
-3. Flag any names that appear to be misspelled
-4. Provide corrections for misspelled names
-5. Return the corrected transcript with proper spellings
+ONLY correct analyst/investment firm names. Be conservative.
 
-CRITICAL RULES:
-- ONLY correct misspellings of proper names (people and companies)
-- DO NOT change any other content, dialogue, or structure
-- Use your knowledge to verify correct spellings of executives, analysts, and companies
-- Preserve all formatting including <strong> tags and line breaks
-- If a name is already correct, leave it unchanged
+Fix these ONLY:
+- "Truro Securities" → "Truist Securities"
+- "JP Morgon" → "JP Morgan"
+- "Goldman Sacks" → "Goldman Sachs"
+- "Morgan Stanley" → "Morgan Stanley"
+- Clear misspellings of major banks/investment firms
 
-Return ONLY the corrected transcript with no additional commentary or explanation.`;
+DO NOT change:
+- Executive names (Rob Lynch, Katie Fogarty, etc.)
+- Company names you're unsure about
+- Person names - NEVER touch these
+- Any content/dialogue
 
-    const userPrompt = `Please verify and correct any misspelled names (people and companies) in this transcript. Leave everything else unchanged.
+Look for labels like: <strong>Truro Securities Analyst</strong>
+Only fix the company name if it's obviously misspelled.
+
+RESPONSE FORMAT:
+[Corrected transcript]
+---CHANGES---
+[List company corrections, or write "All company names correct"]`;
+
+    const userPrompt = `Only fix OBVIOUS analyst firm name misspellings. Leave all person names and executive names unchanged.
 
 Transcript:
 ${transcript}`;
@@ -357,18 +445,45 @@ ${transcript}`;
       temperature: 0.1,
     });
 
-    const correctedTranscript = completion.choices[0].message.content;
+    let fullResponse = completion.choices[0].message.content || '';
     const tokensUsed = completion.usage?.total_tokens || 0;
+
+    // Remove markdown code fences if present (multiple patterns)
+    fullResponse = fullResponse
+      .replace(/^```html\s*/gi, '')
+      .replace(/^```\s*/g, '')
+      .replace(/\s*```$/g, '')
+      .trim();
+
+    // Split response into transcript and changes
+    let correctedTranscript = fullResponse;
+    let changesSummary = 'Verified analyst firm names';
+    
+    if (fullResponse.includes('---CHANGES---')) {
+      const parts = fullResponse.split('---CHANGES---');
+      correctedTranscript = parts[0].trim();
+      const changesText = parts[1].trim();
+      
+      if (changesText && changesText !== 'All company names correct') {
+        changesSummary = changesText;
+      } else {
+        changesSummary = 'All company names correct';
+      }
+    }
+
+    console.log(`   ✅ Company names checked! Tokens used: ${tokensUsed}`);
+    console.log(`   Changes: ${changesSummary.substring(0, 100)}...`);
 
     res.json({
       success: true,
       corrected_transcript: correctedTranscript,
       tokens_used: tokensUsed,
+      changes_summary: changesSummary,
     });
   } catch (error: any) {
-    console.error('Error checking names:', error);
+    console.error('❌ Error checking company names:', error);
     res.status(500).json({ 
-      error: error.message || 'Failed to check names' 
+      error: error.message || 'Failed to check company names' 
     });
   }
 });
