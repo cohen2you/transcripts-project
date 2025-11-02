@@ -59,27 +59,94 @@ CRITICAL RULES:
 - If a name or title looks correct, leave it unchanged
 
 SPECIAL CASE - Misplaced speaker labels and extracting company names:
-When you see a pattern where the operator introduces someone with their company, extract that information:
+When the operator introduces someone, that person MUST be the next speaker (not someone else).
 
+Common Error Pattern to Fix:
+Operator says: "Our next question is from Jeffrey Bernstein with Barclays. Please proceed."
+WRONG next speaker: Rob Lynch (CEO) - This is incorrect!
+CORRECT next speaker: Jeffrey Bernstein (Barclays) - The person who was just introduced!
+
+Example Fix:
 Bad:
-<strong>Krista</strong> (Operator)
+<strong>Operator</strong>
 
-Your next question comes from the line of Doug Anmuth with JP Morgan. Please go ahead.
+Our next question is from Jeffrey Bernstein with Barclays. Please proceed.
 
-<strong>Doug Anmuth</strong> 
+<strong>Rob Lynch</strong> (Chief Executive Officer)
 
-Thanks so much for taking the questions...
+Great, thank you. Just wanted to build on...
 
 Good (Fix it to):
-<strong>Krista</strong> (Operator)
+<strong>Operator</strong>
 
-Your next question comes from the line of Doug Anmuth with JP Morgan. Please go ahead.
+Our next question is from Jeffrey Bernstein with Barclays. Please proceed.
 
-<strong>Doug Anmuth</strong> (JP Morgan)
+<strong>Jeffrey Bernstein</strong> (Barclays)
 
-Thanks so much for taking the questions...
+Great, thank you. Just wanted to build on...
 
-IMPORTANT: Always extract company affiliations from operator introductions and add them to speaker labels in parentheses
+CRITICAL RULES:
+- The person introduced by the operator MUST be the next speaker
+- Extract company names from introductions (e.g., "with Barclays" → add "(Barclays)" to speaker label)
+- If a different name appears after an introduction, it's almost always an error - fix it to match who was introduced
+- Always keep the operator's full introduction intact including "Please proceed" or "Please go ahead"
+
+ANOTHER COMMON ERROR - Question/Answer transitions:
+When an analyst asks a question, the company executive's ANSWER often gets incorrectly labeled as the analyst still speaking.
+
+Pattern to detect:
+- Analyst asks a question (ends with "Thanks" or a question mark)
+- Same speaker label continues BUT the content is clearly an ANSWER not a question
+- Look for: addressing the analyst by name ("Brian?", "Great question"), references to internal operations, "we/our/I" from company perspective
+
+Example Error:
+<strong>Brian Vaccaro</strong> (Raymond James)
+
+Can you elaborate on guest satisfaction metrics? Thanks.
+
+Brian? I had a call with Stephanie last night... [This is NOT Brian speaking - it's the CEO answering!]
+
+Should be fixed to:
+<strong>Brian Vaccaro</strong> (Raymond James)
+
+Can you elaborate on guest satisfaction metrics? Thanks.
+
+<strong>Rob Lynch</strong> (Chief Executive Officer)
+
+Brian? I had a call with Stephanie last night...
+
+IMPORTANT: Insert the appropriate company executive speaker label (CEO, CFO, etc.) when you detect an answer to an analyst's question that's incorrectly under the analyst's name.
+
+ANOTHER COMMON ERROR - Missing speaker labels for follow-up questions:
+After an executive answers, the analyst often asks a follow-up question BUT the speaker label is missing entirely.
+
+Pattern to detect:
+- Executive finishes answering a question
+- Text continues with phrases like "Great. And then..." or "Thanks. My follow-up is..." or "And I have a follow up"
+- This is clearly the ANALYST asking another question, not the executive still talking
+- The analyst's name was recently introduced by the operator
+
+Example Error:
+<strong>Katie Fogarty</strong> (Chief Financial Officer)
+
+...without having to lean on a significant amount of price to offset the beef market.
+
+Great. And then I had another question about the labor savings... [This is Jake asking a follow-up, NOT Katie!]
+
+Should be fixed to:
+<strong>Katie Fogarty</strong> (Chief Financial Officer)
+
+...without having to lean on a significant amount of price to offset the beef market.
+
+<strong>Jake Bartlett</strong> (Truro Securities)
+
+Great. And then I had another question about the labor savings...
+
+<strong>Rob Lynch</strong> (Chief Executive Officer)
+
+So one of the big opportunity untapped opportunities is on equipment...
+
+IMPORTANT: Insert analyst speaker labels when you detect follow-up questions that are missing labels. Look for transitions like "Great. And then...", "Thanks. My follow-up...", "And I have a follow up", etc.
 
 Return ONLY the corrected transcript with no additional commentary or explanation.`;
 
