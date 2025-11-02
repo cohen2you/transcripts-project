@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Earnings Call Transcript Cleaner</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📝 Earnings Call Transcript Cleaner</h1>
+            <p class="subtitle">Paste your raw transcript below. AI will correct names and titles while preserving the actual content.</p>
+        </header>
+
+        <div class="main-content">
+            <div class="input-section">
+                <h2>Raw Transcript</h2>
+                <textarea 
+                    id="rawTranscript" 
+                    placeholder="Paste your earnings call transcript here..."
+                    rows="20"
+                ></textarea>
+                <div class="button-group">
+                    <button id="processBtn" class="btn btn-primary">
+                        <span class="btn-text">Clean Transcript</span>
+                        <span class="btn-loader" style="display: none;">Processing...</span>
+                    </button>
+                    <button id="clearBtn" class="btn btn-secondary">Clear</button>
+                </div>
+            </div>
+
+            <div class="output-section">
+                <h2>Cleaned Transcript</h2>
+                <div id="outputArea" class="output-box">
+                    <p class="placeholder-text">Cleaned transcript will appear here...</p>
+                </div>
+                <div class="stats" id="stats" style="display: none;">
+                    <p><strong>Tokens used:</strong> <span id="tokensUsed">0</span></p>
+                </div>
+                <div class="button-group">
+                    <button id="checkNamesBtn" class="btn btn-warning" style="display: none;">
+                        <span class="btn-text">✓ Check Name Spelling</span>
+                        <span class="btn-loader" style="display: none;">Checking...</span>
+                    </button>
+                    <button id="segmentBtn" class="btn btn-info" style="display: none;">
+                        <span class="btn-text">📋 Segment Transcript</span>
+                        <span class="btn-loader" style="display: none;">Segmenting...</span>
+                    </button>
+                </div>
+                <div class="button-group">
+                    <button id="addDisclaimersBtn" class="btn btn-primary" style="display: none;">Add Disclaimers</button>
+                    <button id="copyBtn" class="btn btn-success" style="display: none;">Copy to Clipboard</button>
+                    <button id="downloadBtn" class="btn btn-success" style="display: none;">Download as Text</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="errorMsg" class="error-message" style="display: none;"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
+
