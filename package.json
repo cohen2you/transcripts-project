@@ -4,11 +4,10 @@
   "description": "AI-powered earnings call transcript cleaner",
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc",
+    "build": "npm install && tsc",
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts",
-    "watch": "tsc -w",
-    "render-build": "npm install && npm run build"
+    "watch": "tsc -w"
   },
   "keywords": ["openai", "transcript", "earnings-call"],
   "author": "",
