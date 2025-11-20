@@ -19,8 +19,11 @@ const openai = new OpenAI({
 });
 
 // Job queue system
+type JobType = 'process' | 'verify-speakers' | 'segment';
+
 interface Job {
   id: string;
+  type: JobType;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   progress: {
     currentChunk: number;
@@ -28,8 +31,11 @@ interface Job {
     message: string;
   };
   result?: {
-    cleaned_transcript: string;
+    cleaned_transcript?: string;
+    verified_transcript?: string;
+    segmented_transcript?: string;
     tokens_used: number;
+    changes_summary?: string;
   };
   error?: string;
   createdAt: Date;
@@ -146,6 +152,76 @@ ${chunk}`;
   return { cleaned, tokens };
 }
 
+// Process a single chunk for verify-speakers
+async function processVerifySpeakersChunk(
+  chunk: string,
+  chunkIndex: number,
+  totalChunks: number,
+  systemPrompt: string
+): Promise<{ cleaned: string; tokens: number }> {
+  const userPrompt = `Please verify and correct ONLY the speaker attributions in this transcript section. Do not change any words or formatting.
+
+Transcript section:
+${chunk}`;
+
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4o',
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    temperature: 0.1,
+  });
+
+  let cleaned = completion.choices[0].message.content || '';
+  const tokens = completion.usage?.total_tokens || 0;
+
+  // Remove markdown code fences if present
+  cleaned = cleaned
+    .replace(/^```html\s*/gi, '')
+    .replace(/^```\s*/g, '')
+    .replace(/\s*```$/g, '')
+    .trim();
+
+  // Convert any markdown bold to HTML
+  cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  return { cleaned, tokens };
+}
+
+// Process a single chunk for segment
+async function processSegmentChunk(
+  chunk: string,
+  chunkIndex: number,
+  totalChunks: number,
+  systemPrompt: string
+): Promise<{ cleaned: string; tokens: number }> {
+  const userPrompt = `Add paragraph breaks to this transcript section:
+
+${chunk}`;
+
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4o',
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    temperature: 0.1,
+  });
+
+  let cleaned = completion.choices[0].message.content || '';
+  const tokens = completion.usage?.total_tokens || 0;
+
+  // Remove markdown code fences if present
+  cleaned = cleaned
+    .replace(/^```html\s*/gi, '')
+    .replace(/^```\s*/g, '')
+    .replace(/\s*```$/g, '')
+    .trim();
+
+  return { cleaned, tokens };
+}
+
 // Serve the main page
 app.get('/', (req: Request, res: Response) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
@@ -171,6 +247,7 @@ app.post('/api/process', async (req: Request, res: Response) => {
 
     const job: Job = {
       id: jobId,
+      type: 'process',
       status: 'pending',
       progress: {
         currentChunk: 0,
@@ -352,103 +429,16 @@ Return ONLY the corrected transcript with no additional commentary or explanatio
   }
 }
 
-// Get job status endpoint
-app.get('/api/process/:jobId/status', (req: Request, res: Response) => {
-  const { jobId } = req.params;
+// Background job processor for verify-speakers
+async function processVerifySpeakersJob(jobId: string, transcript: string, chunks: string[]) {
   const job = jobs.get(jobId);
+  if (!job) return;
 
-  if (!job) {
-    return res.status(404).json({ error: 'Job not found' });
-  }
+  job.status = 'processing';
 
-  res.json({
-    status: job.status,
-    progress: job.progress,
-    result: job.result,
-    error: job.error,
-  });
-});
+  console.log(`   Transcript length: ${transcript.length} characters`);
 
-// Segment transcript endpoint
-app.post('/api/segment', async (req: Request, res: Response) => {
-  try {
-    console.log('📋 Segmenting transcript...');
-    const { transcript } = req.body;
-
-    if (!transcript) {
-      return res.status(400).json({ error: 'No transcript provided' });
-    }
-
-    if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: 'OpenAI API key not configured' });
-    }
-    
-    console.log(`   Transcript length: ${transcript.length} characters`);
-
-    const systemPrompt = `Add paragraph breaks to improve readability. 
-
-Rules:
-- DO NOT change any words
-- ONLY add line breaks at logical topic changes
-- Break every 3-5 sentences
-- Preserve all <strong> tags and formatting
-
-Return the segmented transcript only.`;
-
-    const userPrompt = `Add paragraph breaks to this transcript:
-
-${transcript}`;
-
-    // Call OpenAI API
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.1,
-    });
-
-    let segmentedTranscript = completion.choices[0].message.content || '';
-    const tokensUsed = completion.usage?.total_tokens || 0;
-
-    // Remove markdown code fences if present (multiple patterns)
-    segmentedTranscript = segmentedTranscript
-      .replace(/^```html\s*/gi, '')
-      .replace(/^```\s*/g, '')
-      .replace(/\s*```$/g, '')
-      .trim();
-
-    res.json({
-      success: true,
-      segmented_transcript: segmentedTranscript,
-      tokens_used: tokensUsed,
-    });
-  } catch (error: any) {
-    console.error('Error segmenting transcript:', error);
-    res.status(500).json({ 
-      error: error.message || 'Failed to segment transcript' 
-    });
-  }
-});
-
-// Verify speaker attribution endpoint
-app.post('/api/verify-speakers', async (req: Request, res: Response) => {
-  try {
-    console.log('👥 Verifying speaker attributions...');
-    const { transcript } = req.body;
-
-    if (!transcript) {
-      return res.status(400).json({ error: 'No transcript provided' });
-    }
-
-    if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: 'OpenAI API key not configured' });
-    }
-    
-    console.log(`   Transcript length: ${transcript.length} characters`);
-
-    const systemPrompt = `You are a transcript editor fixing speaker attribution errors in earnings calls.
+  const systemPrompt = `You are a transcript editor fixing speaker attribution errors in earnings calls.
 
 CRITICAL ERROR #1 - Wrong speaker after operator introduction:
 When operator introduces an analyst, the VERY NEXT speaker MUST be that analyst, NOT a company executive.
@@ -501,68 +491,322 @@ RULES:
 OUTPUT FORMAT:
 Return the corrected transcript text, then add:
 ---CHANGES---
-Then list each fix you made, like:
-- Changed "Wrong Name" to "Correct Label" after operator introduced them
-- Added "Company Analyst" label for follow-up question
-OR write: No errors found`;
+Then list each fix you made in detail, like:
+- Changed speaker label from "Rob Lynch (Chief Executive Officer)" to "Barclays Analyst" after operator introduced Jeffrey Bernstein with Barclays
+- Added missing speaker label "<strong>Barclays Analyst</strong>" before follow-up question "Great. And then I had another question..."
+- Fixed incorrect attribution: moved executive's answer from under analyst's label to "<strong>Rob Lynch</strong> (Chief Executive Officer)"
+- Added "<strong>Truist Securities Analyst</strong>" label for missing analyst follow-up question
 
-    const userPrompt = `Please verify and correct ONLY the speaker attributions in this transcript. Do not change any words or formatting.
+Be specific about:
+- What was wrong (the incorrect label or missing label)
+- What it was changed to (the correct label)
+- Where it occurred (context like "after operator introduction" or "for follow-up question")
 
-Transcript:
-${transcript}`;
+If no errors found, write: No speaker attribution errors found in this section.`;
 
-    // Call OpenAI API
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.1,
-    });
+  const cleanedChunks: string[] = [];
+  let totalTokens = 0;
+  let allChanges: Array<{ chunk: number; changes: string[] }> = [];
+  let totalChangesCount = 0;
 
-    let fullResponse = completion.choices[0].message.content || '';
-    const tokensUsed = completion.usage?.total_tokens || 0;
+  try {
+    for (let i = 0; i < chunks.length; i++) {
+      job.progress.currentChunk = i + 1;
+      job.progress.message = `Verifying chunk ${i + 1} of ${chunks.length}...`;
 
-    // Remove markdown code fences if present (multiple patterns)
-    fullResponse = fullResponse
-      .replace(/^```html\s*/gi, '')
-      .replace(/^```\s*/g, '')
-      .replace(/\s*```$/g, '')
-      .trim();
+      console.log(`   Verifying chunk ${i + 1}/${chunks.length} for job ${jobId}`);
 
-    // Split response into transcript and changes
-    let verifiedTranscript = fullResponse;
-    let changesSummary = 'Verified speaker attributions and corrected any misplaced labels';
-    
-    if (fullResponse.includes('---CHANGES---')) {
-      const parts = fullResponse.split('---CHANGES---');
-      verifiedTranscript = parts[0].trim();
-      const changesText = parts[1].trim();
+      const result = await processVerifySpeakersChunk(chunks[i], i, chunks.length, systemPrompt);
       
-      // Remove template placeholder text if AI included it
-      verifiedTranscript = verifiedTranscript.replace(/^\[Corrected transcript\]\s*/i, '');
+      // Extract changes if present
+      let cleaned = result.cleaned;
+      const chunkChanges: string[] = [];
       
-      if (changesText && changesText !== 'No speaker attribution errors found.' && changesText !== 'No errors found') {
-        changesSummary = changesText;
-      } else {
-        changesSummary = 'No speaker attribution errors found';
+      if (cleaned.includes('---CHANGES---')) {
+        const parts = cleaned.split('---CHANGES---');
+        cleaned = parts[0].trim();
+        const changesText = parts[1].trim();
+        
+        if (changesText && 
+            !changesText.includes('No speaker attribution errors found') && 
+            !changesText.includes('No errors found')) {
+          // Parse individual change items (lines starting with -)
+          const changeLines = changesText.split('\n')
+            .map(line => line.trim())
+            .filter(line => line.startsWith('-') || line.startsWith('•') || (line.length > 0 && !line.startsWith('---')));
+          
+          chunkChanges.push(...changeLines);
+          totalChangesCount += changeLines.length;
+        }
       }
+      
+      if (chunkChanges.length > 0) {
+        allChanges.push({ chunk: i + 1, changes: chunkChanges });
+      }
+      
+      cleanedChunks.push(cleaned);
+      totalTokens += result.tokens;
     }
 
-    console.log(`   ✅ Speakers verified! Tokens used: ${tokensUsed}`);
-    console.log(`   Changes: ${changesSummary.substring(0, 100)}...`);
+    // Combine all chunks
+    const verifiedTranscript = cleanedChunks.join('\n\n');
+    
+    // Format detailed changes summary
+    let changesSummary = '';
+    if (allChanges.length > 0) {
+      changesSummary = `Found and fixed ${totalChangesCount} speaker attribution ${totalChangesCount === 1 ? 'error' : 'errors'}:\n\n`;
+      
+      for (const chunkChange of allChanges) {
+        if (chunks.length > 1) {
+          changesSummary += `Chunk ${chunkChange.chunk}:\n`;
+        }
+        for (const change of chunkChange.changes) {
+          // Remove leading dash/bullet if present
+          const cleanChange = change.replace(/^[-•]\s*/, '').trim();
+          changesSummary += `  • ${cleanChange}\n`;
+        }
+        if (chunks.length > 1) {
+          changesSummary += '\n';
+        }
+      }
+      changesSummary = changesSummary.trim();
+    } else {
+      changesSummary = '✓ No speaker attribution errors found. All speaker labels are correctly attributed.';
+    }
 
+    job.status = 'completed';
+    job.result = {
+      verified_transcript: verifiedTranscript,
+      tokens_used: totalTokens,
+      changes_summary: changesSummary,
+    };
+    job.progress.message = 'Verification complete!';
+
+    console.log(`   ✅ Job ${jobId} completed! Tokens used: ${totalTokens}, Changes: ${totalChangesCount}`);
+  } catch (error: any) {
+    job.status = 'failed';
+    job.error = error.message || 'Failed to verify speakers';
+    job.progress.message = 'Verification failed';
+    throw error;
+  }
+}
+
+// Background job processor for segment
+async function processSegmentJob(jobId: string, transcript: string, chunks: string[]) {
+  const job = jobs.get(jobId);
+  if (!job) return;
+
+  job.status = 'processing';
+
+  console.log(`   Transcript length: ${transcript.length} characters`);
+
+  const systemPrompt = `Add paragraph breaks to improve readability. 
+
+Rules:
+- DO NOT change any words
+- ONLY add line breaks at logical topic changes
+- Break every 3-5 sentences
+- Preserve all <strong> tags and formatting
+
+Return the segmented transcript only.`;
+
+  const segmentedChunks: string[] = [];
+  let totalTokens = 0;
+
+  try {
+    for (let i = 0; i < chunks.length; i++) {
+      job.progress.currentChunk = i + 1;
+      job.progress.message = `Segmenting chunk ${i + 1} of ${chunks.length}...`;
+
+      console.log(`   Segmenting chunk ${i + 1}/${chunks.length} for job ${jobId}`);
+
+      const result = await processSegmentChunk(chunks[i], i, chunks.length, systemPrompt);
+      segmentedChunks.push(result.cleaned);
+      totalTokens += result.tokens;
+    }
+
+    // Combine all chunks
+    const segmentedTranscript = segmentedChunks.join('\n\n');
+
+    job.status = 'completed';
+    job.result = {
+      segmented_transcript: segmentedTranscript,
+      tokens_used: totalTokens,
+    };
+    job.progress.message = 'Segmentation complete!';
+
+    console.log(`   ✅ Job ${jobId} completed! Tokens used: ${totalTokens}`);
+  } catch (error: any) {
+    job.status = 'failed';
+    job.error = error.message || 'Failed to segment transcript';
+    job.progress.message = 'Segmentation failed';
+    throw error;
+  }
+}
+
+// Get job status endpoint (works for all job types)
+app.get('/api/process/:jobId/status', (req: Request, res: Response) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  res.json({
+    status: job.status,
+    progress: job.progress,
+    result: job.result,
+    error: job.error,
+  });
+});
+
+app.get('/api/verify-speakers/:jobId/status', (req: Request, res: Response) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  res.json({
+    status: job.status,
+    progress: job.progress,
+    result: job.result,
+    error: job.error,
+  });
+});
+
+app.get('/api/segment/:jobId/status', (req: Request, res: Response) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  res.json({
+    status: job.status,
+    progress: job.progress,
+    result: job.result,
+    error: job.error,
+  });
+});
+
+// Segment transcript endpoint - creates job and returns immediately
+app.post('/api/segment', async (req: Request, res: Response) => {
+  try {
+    const { transcript } = req.body;
+
+    if (!transcript) {
+      return res.status(400).json({ error: 'No transcript provided' });
+    }
+
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ error: 'OpenAI API key not configured' });
+    }
+
+    // Create job
+    const jobId = uuidv4();
+    const chunks = chunkTranscript(transcript);
+    const totalChunks = chunks.length;
+
+    const job: Job = {
+      id: jobId,
+      type: 'segment',
+      status: 'pending',
+      progress: {
+        currentChunk: 0,
+        totalChunks: totalChunks,
+        message: `Segmenting ${totalChunks} chunk${totalChunks > 1 ? 's' : ''}...`,
+      },
+      createdAt: new Date(),
+    };
+
+    jobs.set(jobId, job);
+
+    console.log(`📋 Created segment job ${jobId} for transcript (${transcript.length} chars, ${totalChunks} chunks)`);
+
+    // Return job ID immediately
     res.json({
       success: true,
-      verified_transcript: verifiedTranscript,
-      tokens_used: tokensUsed,
-      changes_summary: changesSummary,
+      job_id: jobId,
+      total_chunks: totalChunks,
+    });
+
+    // Process in background
+    processSegmentJob(jobId, transcript, chunks).catch((error) => {
+      console.error(`Error processing segment job ${jobId}:`, error);
+      const job = jobs.get(jobId);
+      if (job) {
+        job.status = 'failed';
+        job.error = error.message || 'Failed to segment transcript';
+        job.progress.message = 'Segmentation failed';
+      }
     });
   } catch (error: any) {
-    console.error('Error verifying speakers:', error);
+    console.error('Error creating segment job:', error);
     res.status(500).json({ 
-      error: error.message || 'Failed to verify speakers' 
+      error: error.message || 'Failed to create segmentation job' 
+    });
+  }
+});
+
+// Verify speaker attribution endpoint - creates job and returns immediately
+app.post('/api/verify-speakers', async (req: Request, res: Response) => {
+  try {
+    const { transcript } = req.body;
+
+    if (!transcript) {
+      return res.status(400).json({ error: 'No transcript provided' });
+    }
+
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ error: 'OpenAI API key not configured' });
+    }
+
+    // Create job
+    const jobId = uuidv4();
+    const chunks = chunkTranscript(transcript);
+    const totalChunks = chunks.length;
+
+    const job: Job = {
+      id: jobId,
+      type: 'verify-speakers',
+      status: 'pending',
+      progress: {
+        currentChunk: 0,
+        totalChunks: totalChunks,
+        message: `Verifying ${totalChunks} chunk${totalChunks > 1 ? 's' : ''}...`,
+      },
+      createdAt: new Date(),
+    };
+
+    jobs.set(jobId, job);
+
+    console.log(`👥 Created verify-speakers job ${jobId} for transcript (${transcript.length} chars, ${totalChunks} chunks)`);
+
+    // Return job ID immediately
+    res.json({
+      success: true,
+      job_id: jobId,
+      total_chunks: totalChunks,
+    });
+
+    // Process in background
+    processVerifySpeakersJob(jobId, transcript, chunks).catch((error) => {
+      console.error(`Error processing verify-speakers job ${jobId}:`, error);
+      const job = jobs.get(jobId);
+      if (job) {
+        job.status = 'failed';
+        job.error = error.message || 'Failed to verify speakers';
+        job.progress.message = 'Verification failed';
+      }
+    });
+  } catch (error: any) {
+    console.error('Error creating verify-speakers job:', error);
+    res.status(500).json({ 
+      error: error.message || 'Failed to create verification job' 
     });
   }
 });

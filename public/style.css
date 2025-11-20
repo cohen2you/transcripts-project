@@ -253,6 +253,34 @@ textarea:focus {
     margin: 4px 0;
 }
 
+.detailed-changes {
+    margin-top: 10px;
+}
+
+.changes-header {
+    color: #667eea;
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 12px;
+}
+
+.chunk-header {
+    color: #764ba2;
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin-top: 12px;
+    margin-bottom: 6px;
+}
+
+.change-item {
+    color: #555;
+    font-size: 0.9rem;
+    margin: 4px 0;
+    padding-left: 8px;
+    border-left: 2px solid #e0e0e0;
+    margin-left: 8px;
+}
+
 .error-message {
     background: #f8d7da;
     color: #721c24;

@@ -26,7 +26,29 @@ document.addEventListener('DOMContentLoaded', function() {
         let html = `<h4>${title} (${timestamp})</h4>`;
         
         if (typeof changes === 'string') {
-            html += `<p>${changes}</p>`;
+            // Check if it's a multi-line detailed format (like verify-speakers changes)
+            if (changes.includes('\n') && (changes.includes('Chunk') || changes.includes('•') || changes.includes('Found and fixed'))) {
+                // Format as structured list with proper line breaks
+                const lines = changes.split('\n');
+                html += '<div class="detailed-changes">';
+                lines.forEach(line => {
+                    line = line.trim();
+                    if (!line) return;
+                    
+                    if (line.startsWith('Found and fixed') || line.startsWith('✓')) {
+                        html += `<p class="changes-header"><strong>${line}</strong></p>`;
+                    } else if (line.startsWith('Chunk')) {
+                        html += `<p class="chunk-header"><strong>${line}</strong></p>`;
+                    } else if (line.startsWith('•') || line.startsWith('-')) {
+                        html += `<p class="change-item">${line}</p>`;
+                    } else {
+                        html += `<p>${line}</p>`;
+                    }
+                });
+                html += '</div>';
+            } else {
+                html += `<p>${changes}</p>`;
+            }
         } else if (Array.isArray(changes)) {
             html += '<ul>';
             changes.forEach(change => {
@@ -78,7 +100,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const totalChunks = data.total_chunks;
 
             // Poll for job status
-            await pollJobStatus(jobId, totalChunks);
+            await pollJobStatus(jobId, totalChunks, 'process', processBtn);
 
         } catch (error) {
             hideProgress();
@@ -91,7 +113,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // Poll job status
-    async function pollJobStatus(jobId, totalChunks) {
+    async function pollJobStatus(jobId, totalChunks, jobType, button) {
         const maxAttempts = 300; // 5 minutes max (300 * 1 second)
         let attempts = 0;
         let pollInterval;
@@ -101,52 +123,87 @@ document.addEventListener('DOMContentLoaded', function() {
                 attempts++;
 
                 try {
-                    const response = await fetch(`/api/process/${jobId}/status`);
+                    const statusUrl = jobType === 'process' 
+                        ? `/api/process/${jobId}/status`
+                        : jobType === 'verify-speakers'
+                        ? `/api/verify-speakers/${jobId}/status`
+                        : `/api/segment/${jobId}/status`;
+                    
+                    const response = await fetch(statusUrl);
                     const data = await response.json();
 
                     if (data.status === 'completed') {
                         clearInterval(pollInterval);
                         hideProgress();
 
-                        // Display cleaned transcript
-                        cleanedTranscriptText = data.result.cleaned_transcript;
-                        outputArea.innerHTML = cleanedTranscriptText.replace(/\n/g, '<br>');
-                        
-                        // Show stats
-                        totalTokensUsed = data.result.tokens_used;
-                        tokensUsed.textContent = totalTokensUsed.toLocaleString();
-                        stats.style.display = 'block';
+                        // Handle different job types
+                        if (jobType === 'process') {
+                            cleanedTranscriptText = data.result.cleaned_transcript;
+                            outputArea.innerHTML = cleanedTranscriptText.replace(/\n/g, '<br>');
+                            
+                            totalTokensUsed = data.result.tokens_used;
+                            tokensUsed.textContent = totalTokensUsed.toLocaleString();
+                            stats.style.display = 'block';
 
-                        // Log changes
-                        const changes = [
-                            'Removed standalone "0" numbers after speaker labels',
-                            'Applied bold formatting to speaker names',
-                            'Converted analyst labels to company-only format (e.g., "Goldman Sachs Analyst")',
-                            'Fixed obvious analyst firm name misspellings',
-                            'Standardized speaker label format'
-                        ];
-                        addChangeLogEntry('Clean Transcript', changes);
-                        
-                        // Show action buttons
-                        verifySpeakersBtn.style.display = 'inline-block';
-                        segmentBtn.style.display = 'inline-block';
-                        addDisclaimersBtn.style.display = 'inline-block';
-                        copyBtn.style.display = 'inline-block';
-                        downloadBtn.style.display = 'inline-block';
+                            const changes = [
+                                'Removed standalone "0" numbers after speaker labels',
+                                'Applied bold formatting to speaker names',
+                                'Converted analyst labels to company-only format (e.g., "Goldman Sachs Analyst")',
+                                'Fixed obvious analyst firm name misspellings',
+                                'Standardized speaker label format'
+                            ];
+                            addChangeLogEntry('Clean Transcript', changes);
+                            
+                            verifySpeakersBtn.style.display = 'inline-block';
+                            segmentBtn.style.display = 'inline-block';
+                            addDisclaimersBtn.style.display = 'inline-block';
+                            copyBtn.style.display = 'inline-block';
+                            downloadBtn.style.display = 'inline-block';
+                        } else if (jobType === 'verify-speakers') {
+                            cleanedTranscriptText = data.result.verified_transcript;
+                            outputArea.innerHTML = cleanedTranscriptText.replace(/\n/g, '<br>');
+                            
+                            totalTokensUsed += data.result.tokens_used;
+                            tokensUsed.textContent = totalTokensUsed.toLocaleString();
+
+                            if (data.result.changes_summary) {
+                                addChangeLogEntry('Verify Speakers', data.result.changes_summary);
+                            } else {
+                                addChangeLogEntry('Verify Speakers', 'Verified speaker attributions and corrected any misplaced labels');
+                            }
+
+                            const originalText = button.querySelector('.btn-text').textContent;
+                            button.querySelector('.btn-text').textContent = '✓ Speakers Verified!';
+                            setTimeout(() => {
+                                button.querySelector('.btn-text').textContent = originalText;
+                            }, 3000);
+                        } else if (jobType === 'segment') {
+                            cleanedTranscriptText = data.result.segmented_transcript;
+                            outputArea.innerHTML = cleanedTranscriptText.replace(/\n/g, '<br>');
+                            
+                            totalTokensUsed += data.result.tokens_used;
+                            tokensUsed.textContent = totalTokensUsed.toLocaleString();
+
+                            const originalText = button.querySelector('.btn-text').textContent;
+                            button.querySelector('.btn-text').textContent = '✓ Segmented!';
+                            setTimeout(() => {
+                                button.querySelector('.btn-text').textContent = originalText;
+                            }, 3000);
+                        }
 
                         // Reset button state
-                        processBtn.disabled = false;
-                        processBtn.querySelector('.btn-text').style.display = 'inline-block';
-                        processBtn.querySelector('.btn-loader').style.display = 'none';
+                        button.disabled = false;
+                        button.querySelector('.btn-text').style.display = 'inline-block';
+                        button.querySelector('.btn-loader').style.display = 'none';
 
                         resolve();
                     } else if (data.status === 'failed') {
                         clearInterval(pollInterval);
                         hideProgress();
                         showError('Processing failed: ' + (data.error || 'Unknown error'));
-                        processBtn.disabled = false;
-                        processBtn.querySelector('.btn-text').style.display = 'inline-block';
-                        processBtn.querySelector('.btn-loader').style.display = 'none';
+                        button.disabled = false;
+                        button.querySelector('.btn-text').style.display = 'inline-block';
+                        button.querySelector('.btn-loader').style.display = 'none';
                         reject(new Error(data.error || 'Processing failed'));
                     } else if (data.status === 'processing' || data.status === 'pending') {
                         // Update progress
@@ -158,9 +215,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     clearInterval(pollInterval);
                     hideProgress();
                     showError('Error checking job status: ' + error.message);
-                    processBtn.disabled = false;
-                    processBtn.querySelector('.btn-text').style.display = 'inline-block';
-                    processBtn.querySelector('.btn-loader').style.display = 'none';
+                    button.disabled = false;
+                    button.querySelector('.btn-text').style.display = 'inline-block';
+                    button.querySelector('.btn-loader').style.display = 'none';
                     reject(error);
                 }
 
@@ -168,9 +225,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     clearInterval(pollInterval);
                     hideProgress();
                     showError('Processing timed out. Please try again.');
-                    processBtn.disabled = false;
-                    processBtn.querySelector('.btn-text').style.display = 'inline-block';
-                    processBtn.querySelector('.btn-loader').style.display = 'none';
+                    button.disabled = false;
+                    button.querySelector('.btn-text').style.display = 'inline-block';
+                    button.querySelector('.btn-loader').style.display = 'none';
                     reject(new Error('Processing timed out'));
                 }
             }, 1000); // Poll every second
@@ -215,20 +272,17 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
 
-        // Check transcript size and warn if large
-        const charCount = cleanedTranscriptText.length;
-        if (charCount > 40000) {
-            const proceed = confirm(`This transcript is ${Math.round(charCount/1000)}K characters. Speaker verification may take 60-120 seconds. Continue?`);
-            if (!proceed) return;
-        }
-
         // Show loading state
         verifySpeakersBtn.disabled = true;
         verifySpeakersBtn.querySelector('.btn-text').style.display = 'none';
         verifySpeakersBtn.querySelector('.btn-loader').style.display = 'inline-block';
         hideError();
 
+        // Show progress UI
+        showProgress(0, 1, 'Starting...');
+
         try {
+            // Create job
             const response = await fetch('/api/verify-speakers', {
                 method: 'POST',
                 headers: {
@@ -243,31 +297,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 throw new Error(data.error || 'Speaker verification failed');
             }
 
-            // Update with verified transcript
-            cleanedTranscriptText = data.verified_transcript;
-            outputArea.innerHTML = cleanedTranscriptText.replace(/\n/g, '<br>');
-            
-            // Update token count
-            totalTokensUsed += data.tokens_used;
-            tokensUsed.textContent = totalTokensUsed.toLocaleString();
+            const jobId = data.job_id;
+            const totalChunks = data.total_chunks;
 
-            // Log changes
-            if (data.changes_summary) {
-                addChangeLogEntry('Verify Speakers', data.changes_summary);
-            } else {
-                addChangeLogEntry('Verify Speakers', 'Verified speaker attributions and corrected any misplaced labels');
-            }
-
-            // Show success message briefly
-            const originalText = verifySpeakersBtn.querySelector('.btn-text').textContent;
-            verifySpeakersBtn.querySelector('.btn-text').textContent = '✓ Speakers Verified!';
-            setTimeout(() => {
-                verifySpeakersBtn.querySelector('.btn-text').textContent = originalText;
-            }, 3000);
+            // Poll for job status
+            await pollJobStatus(jobId, totalChunks, 'verify-speakers', verifySpeakersBtn);
 
         } catch (error) {
+            hideProgress();
             showError('Error: ' + error.message);
-        } finally {
             // Reset button state
             verifySpeakersBtn.disabled = false;
             verifySpeakersBtn.querySelector('.btn-text').style.display = 'inline-block';
@@ -288,7 +326,11 @@ document.addEventListener('DOMContentLoaded', function() {
         segmentBtn.querySelector('.btn-loader').style.display = 'inline-block';
         hideError();
 
+        // Show progress UI
+        showProgress(0, 1, 'Starting...');
+
         try {
+            // Create job
             const response = await fetch('/api/segment', {
                 method: 'POST',
                 headers: {
@@ -303,24 +345,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 throw new Error(data.error || 'Segmentation failed');
             }
 
-            // Update with segmented transcript
-            cleanedTranscriptText = data.segmented_transcript;
-            outputArea.innerHTML = cleanedTranscriptText.replace(/\n/g, '<br>');
-            
-            // Update token count
-            totalTokensUsed += data.tokens_used;
-            tokensUsed.textContent = totalTokensUsed.toLocaleString();
+            const jobId = data.job_id;
+            const totalChunks = data.total_chunks;
 
-            // Show success message briefly
-            const originalText = segmentBtn.querySelector('.btn-text').textContent;
-            segmentBtn.querySelector('.btn-text').textContent = '✓ Segmented!';
-            setTimeout(() => {
-                segmentBtn.querySelector('.btn-text').textContent = originalText;
-            }, 3000);
+            // Poll for job status
+            await pollJobStatus(jobId, totalChunks, 'segment', segmentBtn);
 
         } catch (error) {
+            hideProgress();
             showError('Error: ' + error.message);
-        } finally {
             // Reset button state
             segmentBtn.disabled = false;
             segmentBtn.querySelector('.btn-text').style.display = 'inline-block';
