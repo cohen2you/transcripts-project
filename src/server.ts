@@ -3,6 +3,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import OpenAI from 'openai';
+import { v4 as uuidv4 } from 'uuid';
 
 // Load environment variables from .env.local or .env
 dotenv.config({ path: '.env.local' });
@@ -11,10 +12,40 @@ dotenv.config(); // fallback to .env if .env.local doesn't exist
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Initialize OpenAI client
+// Initialize OpenAI client with increased timeout
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+  timeout: 300000, // 5 minutes per request
 });
+
+// Job queue system
+interface Job {
+  id: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  progress: {
+    currentChunk: number;
+    totalChunks: number;
+    message: string;
+  };
+  result?: {
+    cleaned_transcript: string;
+    tokens_used: number;
+  };
+  error?: string;
+  createdAt: Date;
+}
+
+const jobs = new Map<string, Job>();
+
+// Clean up old jobs (older than 1 hour)
+setInterval(() => {
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+  for (const [id, job] of jobs.entries()) {
+    if (job.createdAt < oneHourAgo) {
+      jobs.delete(id);
+    }
+  }
+}, 60 * 60 * 1000); // Run every hour
 
 // Middleware
 app.use(cors());
@@ -27,15 +58,102 @@ app.use((req, res, next) => {
   next();
 });
 
+// Helper function to split transcript into chunks
+function chunkTranscript(transcript: string, chunkSize: number = 6000): string[] {
+  const chunks: string[] = [];
+  
+  // If transcript is small enough, return as single chunk
+  if (transcript.length <= chunkSize) {
+    return [transcript];
+  }
+  
+  // Try to split at natural boundaries (speaker labels)
+  let currentIndex = 0;
+  
+  while (currentIndex < transcript.length) {
+    const remaining = transcript.length - currentIndex;
+    
+    if (remaining <= chunkSize) {
+      // Last chunk - take everything remaining
+      chunks.push(transcript.substring(currentIndex));
+      break;
+    }
+    
+    // Find a good split point - look for speaker label patterns
+    const chunkEnd = currentIndex + chunkSize;
+    const searchStart = Math.max(currentIndex, chunkEnd - 1000); // Look back up to 1000 chars
+    
+    // Look for speaker label patterns like "<strong>", "Operator", or double newlines
+    const searchText = transcript.substring(searchStart, chunkEnd + 500);
+    const speakerLabelMatch = searchText.match(/(\n\n<strong>|\n\nOperator|\n\n[A-Z][a-z]+ [A-Z][a-z]+)/);
+    
+    if (speakerLabelMatch && speakerLabelMatch.index !== undefined) {
+      const splitPoint = searchStart + speakerLabelMatch.index;
+      chunks.push(transcript.substring(currentIndex, splitPoint));
+      currentIndex = splitPoint;
+    } else {
+      // Fallback: split at double newline or single newline
+      const fallbackMatch = transcript.substring(searchStart, chunkEnd + 500).match(/\n\n/);
+      if (fallbackMatch && fallbackMatch.index !== undefined) {
+        const splitPoint = searchStart + fallbackMatch.index + 2;
+        chunks.push(transcript.substring(currentIndex, splitPoint));
+        currentIndex = splitPoint;
+      } else {
+        // Last resort: split at chunk size
+        chunks.push(transcript.substring(currentIndex, chunkEnd));
+        currentIndex = chunkEnd;
+      }
+    }
+  }
+  
+  return chunks;
+}
+
+// Process a single chunk
+async function processChunk(
+  chunk: string,
+  chunkIndex: number,
+  totalChunks: number,
+  systemPrompt: string
+): Promise<{ cleaned: string; tokens: number }> {
+  const userPrompt = `Please review this earnings call transcript section and correct only the speaker names and titles. Leave all spoken content unchanged.
+
+Transcript section:
+${chunk}`;
+
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4o',
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    temperature: 0.1,
+  });
+
+  let cleaned = completion.choices[0].message.content || '';
+  const tokens = completion.usage?.total_tokens || 0;
+
+  // Remove markdown code fences if present
+  cleaned = cleaned
+    .replace(/^```html\s*/gi, '')
+    .replace(/^```\s*/g, '')
+    .replace(/\s*```$/g, '')
+    .trim();
+
+  // Convert any markdown bold to HTML
+  cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  return { cleaned, tokens };
+}
+
 // Serve the main page
 app.get('/', (req: Request, res: Response) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
-// Process transcript endpoint
+// Process transcript endpoint - creates job and returns immediately
 app.post('/api/process', async (req: Request, res: Response) => {
   try {
-    console.log('📝 Processing transcript...');
     const { transcript } = req.body;
 
     if (!transcript) {
@@ -45,10 +163,62 @@ app.post('/api/process', async (req: Request, res: Response) => {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: 'OpenAI API key not configured' });
     }
-    
-    console.log(`   Transcript length: ${transcript.length} characters`);
 
-    const systemPrompt = `You are a transcript editor specialized in cleaning earnings call transcripts. 
+    // Create job
+    const jobId = uuidv4();
+    const chunks = chunkTranscript(transcript);
+    const totalChunks = chunks.length;
+
+    const job: Job = {
+      id: jobId,
+      status: 'pending',
+      progress: {
+        currentChunk: 0,
+        totalChunks: totalChunks,
+        message: `Processing ${totalChunks} chunk${totalChunks > 1 ? 's' : ''}...`,
+      },
+      createdAt: new Date(),
+    };
+
+    jobs.set(jobId, job);
+
+    console.log(`📝 Created job ${jobId} for transcript (${transcript.length} chars, ${totalChunks} chunks)`);
+
+    // Return job ID immediately
+    res.json({
+      success: true,
+      job_id: jobId,
+      total_chunks: totalChunks,
+    });
+
+    // Process in background
+    processJob(jobId, transcript, chunks).catch((error) => {
+      console.error(`Error processing job ${jobId}:`, error);
+      const job = jobs.get(jobId);
+      if (job) {
+        job.status = 'failed';
+        job.error = error.message || 'Failed to process transcript';
+        job.progress.message = 'Processing failed';
+      }
+    });
+  } catch (error: any) {
+    console.error('Error creating job:', error);
+    res.status(500).json({ 
+      error: error.message || 'Failed to create processing job' 
+    });
+  }
+});
+
+// Background job processor
+async function processJob(jobId: string, transcript: string, chunks: string[]) {
+  const job = jobs.get(jobId);
+  if (!job) return;
+
+  job.status = 'processing';
+
+  console.log(`   Transcript length: ${transcript.length} characters`);
+
+  const systemPrompt = `You are a transcript editor specialized in cleaning earnings call transcripts. 
 Your ONLY job is to:
 1. Remove any standalone "0" numbers that appear after speaker labels
 2. Format speaker labels with HTML bold tags: <strong>Name</strong>
@@ -77,7 +247,7 @@ Pattern: Remove the person's name completely. Only use: <strong>[Company Name] A
 More examples:
 - "Jeffrey Bernstein with Barclays" → <strong>Barclays Analyst</strong>
 - "Brian Vaccaro from Goldman Sachs" → <strong>Goldman Sachs Analyst</strong>
-- "Jake Bartlett(Equity Analyst at Truro Securities)" → <strong>Truro Securities Analyst</strong>
+- "Jake Bartlett(Equity Analyst at Truro Securities)" → <strong>Truist Securities Analyst</strong>
 
 For EXECUTIVES (company employees like CEO, CFO):
 - Keep the person's name + title
@@ -148,47 +318,55 @@ IMPORTANT: For analyst follow-ups, insert <strong>Company Name Analyst</strong> 
 
 Return ONLY the corrected transcript with no additional commentary or explanation.`;
 
-    const userPrompt = `Please review this earnings call transcript and correct only the speaker names and titles. Leave all spoken content unchanged.
+  const cleanedChunks: string[] = [];
+  let totalTokens = 0;
 
-Transcript:
-${transcript}`;
+  try {
+    for (let i = 0; i < chunks.length; i++) {
+      job.progress.currentChunk = i + 1;
+      job.progress.message = `Processing chunk ${i + 1} of ${chunks.length}...`;
 
-    // Call OpenAI API
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.1,
-    });
+      console.log(`   Processing chunk ${i + 1}/${chunks.length} for job ${jobId}`);
 
-    let cleanedTranscript = completion.choices[0].message.content || '';
-    const tokensUsed = completion.usage?.total_tokens || 0;
+      const result = await processChunk(chunks[i], i, chunks.length, systemPrompt);
+      cleanedChunks.push(result.cleaned);
+      totalTokens += result.tokens;
+    }
 
-    // Remove markdown code fences if present (multiple patterns)
-    cleanedTranscript = cleanedTranscript
-      .replace(/^```html\s*/gi, '')  // ```html at start
-      .replace(/^```\s*/g, '')        // ``` at start
-      .replace(/\s*```$/g, '')        // ``` at end
-      .trim();
+    // Combine all chunks
+    const cleanedTranscript = cleanedChunks.join('\n\n');
 
-    // Convert any markdown bold (**text**) to HTML (<strong>text</strong>)
-    cleanedTranscript = cleanedTranscript.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-
-    console.log(`   ✅ Cleaned! Tokens used: ${tokensUsed}`);
-
-    res.json({
-      success: true,
+    job.status = 'completed';
+    job.result = {
       cleaned_transcript: cleanedTranscript,
-      tokens_used: tokensUsed,
-    });
+      tokens_used: totalTokens,
+    };
+    job.progress.message = 'Processing complete!';
+
+    console.log(`   ✅ Job ${jobId} completed! Tokens used: ${totalTokens}`);
   } catch (error: any) {
-    console.error('Error processing transcript:', error);
-    res.status(500).json({ 
-      error: error.message || 'Failed to process transcript' 
-    });
+    job.status = 'failed';
+    job.error = error.message || 'Failed to process transcript';
+    job.progress.message = 'Processing failed';
+    throw error;
   }
+}
+
+// Get job status endpoint
+app.get('/api/process/:jobId/status', (req: Request, res: Response) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  res.json({
+    status: job.status,
+    progress: job.progress,
+    result: job.result,
+    error: job.error,
+  });
 });
 
 // Segment transcript endpoint

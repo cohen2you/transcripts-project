@@ -55,7 +55,11 @@ document.addEventListener('DOMContentLoaded', function() {
         processBtn.querySelector('.btn-loader').style.display = 'inline-block';
         hideError();
 
+        // Show progress UI
+        showProgress(0, 1, 'Starting...');
+
         try {
+            // Create job
             const response = await fetch('/api/process', {
                 method: 'POST',
                 headers: {
@@ -70,42 +74,139 @@ document.addEventListener('DOMContentLoaded', function() {
                 throw new Error(data.error || 'Processing failed');
             }
 
-            // Display cleaned transcript
-            cleanedTranscriptText = data.cleaned_transcript;
-            // Use innerHTML to render HTML tags like <strong>
-            outputArea.innerHTML = cleanedTranscriptText.replace(/\n/g, '<br>');
-            
-            // Show stats
-            totalTokensUsed = data.tokens_used;
-            tokensUsed.textContent = totalTokensUsed.toLocaleString();
-            stats.style.display = 'block';
+            const jobId = data.job_id;
+            const totalChunks = data.total_chunks;
 
-            // Log changes
-            const changes = [
-                'Removed standalone "0" numbers after speaker labels',
-                'Applied bold formatting to speaker names',
-                'Converted analyst labels to company-only format (e.g., "Goldman Sachs Analyst")',
-                'Fixed obvious analyst firm name misspellings',
-                'Standardized speaker label format'
-            ];
-            addChangeLogEntry('Clean Transcript', changes);
-            
-            // Show action buttons
-            verifySpeakersBtn.style.display = 'inline-block';
-            segmentBtn.style.display = 'inline-block';
-            addDisclaimersBtn.style.display = 'inline-block';
-            copyBtn.style.display = 'inline-block';
-            downloadBtn.style.display = 'inline-block';
+            // Poll for job status
+            await pollJobStatus(jobId, totalChunks);
 
         } catch (error) {
+            hideProgress();
             showError('Error: ' + error.message);
-        } finally {
             // Reset button state
             processBtn.disabled = false;
             processBtn.querySelector('.btn-text').style.display = 'inline-block';
             processBtn.querySelector('.btn-loader').style.display = 'none';
         }
     });
+
+    // Poll job status
+    async function pollJobStatus(jobId, totalChunks) {
+        const maxAttempts = 300; // 5 minutes max (300 * 1 second)
+        let attempts = 0;
+        let pollInterval;
+
+        return new Promise((resolve, reject) => {
+            pollInterval = setInterval(async () => {
+                attempts++;
+
+                try {
+                    const response = await fetch(`/api/process/${jobId}/status`);
+                    const data = await response.json();
+
+                    if (data.status === 'completed') {
+                        clearInterval(pollInterval);
+                        hideProgress();
+
+                        // Display cleaned transcript
+                        cleanedTranscriptText = data.result.cleaned_transcript;
+                        outputArea.innerHTML = cleanedTranscriptText.replace(/\n/g, '<br>');
+                        
+                        // Show stats
+                        totalTokensUsed = data.result.tokens_used;
+                        tokensUsed.textContent = totalTokensUsed.toLocaleString();
+                        stats.style.display = 'block';
+
+                        // Log changes
+                        const changes = [
+                            'Removed standalone "0" numbers after speaker labels',
+                            'Applied bold formatting to speaker names',
+                            'Converted analyst labels to company-only format (e.g., "Goldman Sachs Analyst")',
+                            'Fixed obvious analyst firm name misspellings',
+                            'Standardized speaker label format'
+                        ];
+                        addChangeLogEntry('Clean Transcript', changes);
+                        
+                        // Show action buttons
+                        verifySpeakersBtn.style.display = 'inline-block';
+                        segmentBtn.style.display = 'inline-block';
+                        addDisclaimersBtn.style.display = 'inline-block';
+                        copyBtn.style.display = 'inline-block';
+                        downloadBtn.style.display = 'inline-block';
+
+                        // Reset button state
+                        processBtn.disabled = false;
+                        processBtn.querySelector('.btn-text').style.display = 'inline-block';
+                        processBtn.querySelector('.btn-loader').style.display = 'none';
+
+                        resolve();
+                    } else if (data.status === 'failed') {
+                        clearInterval(pollInterval);
+                        hideProgress();
+                        showError('Processing failed: ' + (data.error || 'Unknown error'));
+                        processBtn.disabled = false;
+                        processBtn.querySelector('.btn-text').style.display = 'inline-block';
+                        processBtn.querySelector('.btn-loader').style.display = 'none';
+                        reject(new Error(data.error || 'Processing failed'));
+                    } else if (data.status === 'processing' || data.status === 'pending') {
+                        // Update progress
+                        const currentChunk = data.progress.currentChunk || 0;
+                        const progressPercent = totalChunks > 0 ? (currentChunk / totalChunks) * 100 : 0;
+                        showProgress(currentChunk, totalChunks, data.progress.message || 'Processing...');
+                    }
+                } catch (error) {
+                    clearInterval(pollInterval);
+                    hideProgress();
+                    showError('Error checking job status: ' + error.message);
+                    processBtn.disabled = false;
+                    processBtn.querySelector('.btn-text').style.display = 'inline-block';
+                    processBtn.querySelector('.btn-loader').style.display = 'none';
+                    reject(error);
+                }
+
+                if (attempts >= maxAttempts) {
+                    clearInterval(pollInterval);
+                    hideProgress();
+                    showError('Processing timed out. Please try again.');
+                    processBtn.disabled = false;
+                    processBtn.querySelector('.btn-text').style.display = 'inline-block';
+                    processBtn.querySelector('.btn-loader').style.display = 'none';
+                    reject(new Error('Processing timed out'));
+                }
+            }, 1000); // Poll every second
+        });
+    }
+
+    // Show progress UI
+    function showProgress(current, total, message) {
+        let progressContainer = document.getElementById('progressContainer');
+        if (!progressContainer) {
+            progressContainer = document.createElement('div');
+            progressContainer.id = 'progressContainer';
+            progressContainer.className = 'progress-container';
+            outputArea.parentNode.insertBefore(progressContainer, outputArea);
+        }
+
+        const progressPercent = total > 0 ? (current / total) * 100 : 0;
+        progressContainer.innerHTML = `
+            <div class="progress-info">
+                <span class="progress-message">${message}</span>
+                <span class="progress-stats">${current} / ${total}</span>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill" style="width: ${progressPercent}%"></div>
+            </div>
+        `;
+        progressContainer.style.display = 'block';
+    }
+
+    // Hide progress UI
+    function hideProgress() {
+        const progressContainer = document.getElementById('progressContainer');
+        if (progressContainer) {
+            progressContainer.style.display = 'none';
+        }
+    }
 
     // Verify speaker attribution
     verifySpeakersBtn.addEventListener('click', async function() {
@@ -276,6 +377,7 @@ document.addEventListener('DOMContentLoaded', function() {
         stats.style.display = 'none';
         changeLog.style.display = 'none';
         changeLogContent.innerHTML = '';
+        hideProgress();
         hideError();
     });
 
