@@ -64,6 +64,12 @@ app.use((req, res, next) => {
   next();
 });
 
+// Estimate processing time based on chunk count
+function estimateProcessingTime(totalChunks: number, secondsPerChunk: number = 6): number {
+  // Estimate: ~6 seconds per chunk for gpt-4o (can be adjusted based on actual performance)
+  return Math.ceil(totalChunks * secondsPerChunk);
+}
+
 // Helper function to split transcript into chunks
 function chunkTranscript(transcript: string, chunkSize: number = 6000): string[] {
   const chunks: string[] = [];
@@ -115,6 +121,47 @@ function chunkTranscript(transcript: string, chunkSize: number = 6000): string[]
   return chunks;
 }
 
+// Extract dialogue text (remove speaker labels) for comparison
+function extractDialogue(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const dialogueLines: string[] = [];
+  
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Skip empty lines, speaker labels, and standalone "0"
+    if (!trimmed) continue;
+    if (trimmed.startsWith('<strong>') && trimmed.includes('</strong>')) continue;
+    if (trimmed === '0') continue;
+    if (/^operator:?$/i.test(trimmed)) continue;
+    if (/^[A-Z][a-z]+ [A-Z][a-z]+$/.test(trimmed) && !trimmed.includes(' ')) continue;
+    
+    dialogueLines.push(trimmed);
+  }
+  
+  // Normalize whitespace for comparison
+  return dialogueLines.join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+// Validate that dialogue content hasn't changed
+function validateDialogueIntegrity(original: string, cleaned: string): { isValid: boolean; error?: string } {
+  const originalDialogue = extractDialogue(original);
+  const cleanedDialogue = extractDialogue(cleaned);
+  
+  if (originalDialogue !== cleanedDialogue) {
+    // Calculate similarity to see how different they are
+    const maxLength = Math.max(originalDialogue.length, cleanedDialogue.length);
+    const differences = originalDialogue.split('').filter((char, i) => char !== cleanedDialogue[i]).length;
+    const similarity = ((maxLength - differences) / maxLength) * 100;
+    
+    return {
+      isValid: false,
+      error: `Dialogue content changed (${similarity.toFixed(1)}% similarity). Original dialogue must be preserved exactly.`
+    };
+  }
+  
+  return { isValid: true };
+}
+
 // Process a single chunk
 async function processChunk(
   chunk: string,
@@ -148,6 +195,15 @@ ${chunk}`;
 
   // Convert any markdown bold to HTML
   cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  // Validate dialogue integrity
+  const validation = validateDialogueIntegrity(chunk, cleaned);
+  if (!validation.isValid) {
+    console.error(`   ⚠️ WARNING: Chunk ${chunkIndex + 1} dialogue changed: ${validation.error}`);
+    console.error(`   Reverting to original chunk to preserve dialogue integrity.`);
+    // Revert to original if dialogue was altered
+    return { cleaned: chunk, tokens };
+  }
 
   return { cleaned, tokens };
 }
@@ -185,6 +241,15 @@ ${chunk}`;
 
   // Convert any markdown bold to HTML
   cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  // Validate dialogue integrity (verify-speakers should only change labels, not dialogue)
+  const validation = validateDialogueIntegrity(chunk, cleaned);
+  if (!validation.isValid) {
+    console.error(`   ⚠️ WARNING: Chunk ${chunkIndex + 1} dialogue changed during verification: ${validation.error}`);
+    console.error(`   Reverting to original chunk to preserve dialogue integrity.`);
+    // Revert to original if dialogue was altered
+    return { cleaned: chunk, tokens };
+  }
 
   return { cleaned, tokens };
 }
@@ -259,13 +324,22 @@ app.post('/api/process', async (req: Request, res: Response) => {
 
     jobs.set(jobId, job);
 
-    console.log(`📝 Created job ${jobId} for transcript (${transcript.length} chars, ${totalChunks} chunks)`);
+    const estimatedSeconds = estimateProcessingTime(totalChunks);
+    const estimatedMinutes = Math.floor(estimatedSeconds / 60);
+    const estimatedSecondsRemainder = estimatedSeconds % 60;
+    const timeEstimate = estimatedMinutes > 0 
+      ? `${estimatedMinutes}m ${estimatedSecondsRemainder}s`
+      : `${estimatedSeconds}s`;
+
+    console.log(`📝 Created job ${jobId} for transcript (${transcript.length} chars, ${totalChunks} chunks, est. ${timeEstimate})`);
 
     // Return job ID immediately
     res.json({
       success: true,
       job_id: jobId,
       total_chunks: totalChunks,
+      estimated_seconds: estimatedSeconds,
+      estimated_time: timeEstimate,
     });
 
     // Process in background
@@ -725,13 +799,22 @@ app.post('/api/segment', async (req: Request, res: Response) => {
 
     jobs.set(jobId, job);
 
-    console.log(`📋 Created segment job ${jobId} for transcript (${transcript.length} chars, ${totalChunks} chunks)`);
+    const estimatedSeconds = estimateProcessingTime(totalChunks);
+    const estimatedMinutes = Math.floor(estimatedSeconds / 60);
+    const estimatedSecondsRemainder = estimatedSeconds % 60;
+    const timeEstimate = estimatedMinutes > 0 
+      ? `${estimatedMinutes}m ${estimatedSecondsRemainder}s`
+      : `${estimatedSeconds}s`;
+
+    console.log(`📋 Created segment job ${jobId} for transcript (${transcript.length} chars, ${totalChunks} chunks, est. ${timeEstimate})`);
 
     // Return job ID immediately
     res.json({
       success: true,
       job_id: jobId,
       total_chunks: totalChunks,
+      estimated_seconds: estimatedSeconds,
+      estimated_time: timeEstimate,
     });
 
     // Process in background
@@ -784,13 +867,22 @@ app.post('/api/verify-speakers', async (req: Request, res: Response) => {
 
     jobs.set(jobId, job);
 
-    console.log(`👥 Created verify-speakers job ${jobId} for transcript (${transcript.length} chars, ${totalChunks} chunks)`);
+    const estimatedSeconds = estimateProcessingTime(totalChunks);
+    const estimatedMinutes = Math.floor(estimatedSeconds / 60);
+    const estimatedSecondsRemainder = estimatedSeconds % 60;
+    const timeEstimate = estimatedMinutes > 0 
+      ? `${estimatedMinutes}m ${estimatedSecondsRemainder}s`
+      : `${estimatedSeconds}s`;
+
+    console.log(`👥 Created verify-speakers job ${jobId} for transcript (${transcript.length} chars, ${totalChunks} chunks, est. ${timeEstimate})`);
 
     // Return job ID immediately
     res.json({
       success: true,
       job_id: jobId,
       total_chunks: totalChunks,
+      estimated_seconds: estimatedSeconds,
+      estimated_time: timeEstimate,
     });
 
     // Process in background

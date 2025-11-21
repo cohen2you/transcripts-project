@@ -98,9 +98,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const jobId = data.job_id;
             const totalChunks = data.total_chunks;
+            const estimatedTime = data.estimated_time || '';
+
+            // Show initial progress with time estimate
+            if (estimatedTime) {
+                showProgress(0, totalChunks, `Starting... (Est. ${estimatedTime})`);
+            }
 
             // Poll for job status
-            await pollJobStatus(jobId, totalChunks, 'process', processBtn);
+            await pollJobStatus(jobId, totalChunks, 'process', processBtn, estimatedTime);
 
         } catch (error) {
             hideProgress();
@@ -113,7 +119,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // Poll job status
-    async function pollJobStatus(jobId, totalChunks, jobType, button) {
+    async function pollJobStatus(jobId, totalChunks, jobType, button, estimatedTime = '') {
         const maxAttempts = 300; // 5 minutes max (300 * 1 second)
         let attempts = 0;
         let pollInterval;
@@ -209,7 +215,10 @@ document.addEventListener('DOMContentLoaded', function() {
                         // Update progress
                         const currentChunk = data.progress.currentChunk || 0;
                         const progressPercent = totalChunks > 0 ? (currentChunk / totalChunks) * 100 : 0;
-                        showProgress(currentChunk, totalChunks, data.progress.message || 'Processing...');
+                        const message = estimatedTime 
+                            ? `${data.progress.message || 'Processing...'} (Est. ${estimatedTime})`
+                            : (data.progress.message || 'Processing...');
+                        showProgress(currentChunk, totalChunks, message);
                     }
                 } catch (error) {
                     clearInterval(pollInterval);
@@ -299,9 +308,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const jobId = data.job_id;
             const totalChunks = data.total_chunks;
+            const estimatedTime = data.estimated_time || '';
+
+            // Show initial progress with time estimate
+            if (estimatedTime) {
+                showProgress(0, totalChunks, `Starting... (Est. ${estimatedTime})`);
+            }
 
             // Poll for job status
-            await pollJobStatus(jobId, totalChunks, 'verify-speakers', verifySpeakersBtn);
+            await pollJobStatus(jobId, totalChunks, 'verify-speakers', verifySpeakersBtn, estimatedTime);
 
         } catch (error) {
             hideProgress();
@@ -347,9 +362,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const jobId = data.job_id;
             const totalChunks = data.total_chunks;
+            const estimatedTime = data.estimated_time || '';
+
+            // Show initial progress with time estimate
+            if (estimatedTime) {
+                showProgress(0, totalChunks, `Starting... (Est. ${estimatedTime})`);
+            }
 
             // Poll for job status
-            await pollJobStatus(jobId, totalChunks, 'segment', segmentBtn);
+            await pollJobStatus(jobId, totalChunks, 'segment', segmentBtn, estimatedTime);
 
         } catch (error) {
             hideProgress();
