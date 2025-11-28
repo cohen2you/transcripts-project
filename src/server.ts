@@ -254,11 +254,74 @@ ${transcript}`;
   }
 });
 
+// Helper function to pre-process transcript and add missing labels after operator handoffs
+function preprocessMissingLabels(transcript: string): { transcript: string; changes: string[] } {
+  const changes: string[] = [];
+  let processed = transcript;
+  
+  // Pattern: Operator text ending with "Please go ahead" followed by text without label
+  // This handles executive introductions like "turn the call over to Dr. Tony Han. Please go ahead Sir"
+  const handoffPattern = /((?:<strong>)?Operator(?:<\/strong>)?|OPERATOR\(\))\s*\n\s*0?\s*\n([\s\S]*?)(?:turn\s+the\s+call\s+over\s+to|I will now turn the call over to|I will turn the call over to)\s+([^\.\,\n]+?)(?:\.|,)\s*(?:Please\s+go\s+ahead|Please\s+proceed|Go\s+ahead)(?:\s+Sir)?(?:\.)?\s*\n\s*\n([\s\S]{0,200}?)(?=\n\s*<strong>|\n\s*[A-Z][A-Z]+\(\)|$)/gi;
+  
+  let match;
+  const matches: Array<{index: number, name: string, title: string, insertPos: number}> = [];
+  
+  while ((match = handoffPattern.exec(processed)) !== null) {
+    const personName = match[3].trim();
+    const nextText = match[4].trim();
+    
+    // Check if next text starts with a label
+    if (nextText && !nextText.match(/^\s*<strong>|^\s*[A-Z][A-Z]+\(\)/)) {
+      // Extract title from operator text
+      let title = '';
+      const operatorText = match[2];
+      const titleMatch = operatorText.match(/(CEO|CFO|Chief\s+Executive\s+Officer|Chief\s+Financial\s+Officer|President|Chairman|founder)/i);
+      if (titleMatch) {
+        title = ` (${titleMatch[0]})`;
+      }
+      
+      const insertPos = match.index! + match[0].length - nextText.length;
+      matches.push({ index: match.index!, name: personName, title, insertPos });
+    }
+  }
+  
+  // Insert labels in reverse order to maintain positions
+  matches.reverse().forEach(m => {
+    const formattedName = m.name.replace(/\s+/g, ' ').trim();
+    const newLabel = `\n<strong>${formattedName}</strong>${m.title}\n\n`;
+    processed = processed.substring(0, m.insertPos) + newLabel + processed.substring(m.insertPos);
+    changes.push(`Added missing label for ${formattedName} after operator introduction`);
+  });
+  
+  // Also check for analyst introductions
+  const analystPattern = /((?:<strong>)?Operator(?:<\/strong>)?|OPERATOR\(\))\s*\n\s*0?\s*\n([\s\S]*?)(?:Our\s+next\s+question\s+is\s+from|question\s+from)\s+[^,]+?\s+(?:with|from)\s+([^\.\,\n]+?)(?:\.|,)\s*(?:Please\s+proceed|Please\s+go\s+ahead|Go\s+ahead)(?:\.)?\s*\n\s*\n([\s\S]{0,200}?)(?=\n\s*<strong>|\n\s*[A-Z][A-Z]+\(\)|$)/gi;
+  
+  const analystMatches: Array<{company: string, insertPos: number}> = [];
+  
+  while ((match = analystPattern.exec(processed)) !== null) {
+    const companyName = match[3].trim();
+    const nextText = match[4].trim();
+    
+    if (nextText && !nextText.match(/^\s*<strong>|^\s*[A-Z][A-Z]+\(\)/)) {
+      const insertPos = match.index! + match[0].length - nextText.length;
+      analystMatches.push({ company: companyName, insertPos });
+    }
+  }
+  
+  analystMatches.reverse().forEach(m => {
+    const newLabel = `\n<strong>${m.company} Analyst</strong>\n\n`;
+    processed = processed.substring(0, m.insertPos) + newLabel + processed.substring(m.insertPos);
+    changes.push(`Added missing label for ${m.company} Analyst after operator introduction`);
+  });
+  
+  return { transcript: processed, changes };
+}
+
 // Verify speaker attribution endpoint
 app.post('/api/verify-speakers', async (req: Request, res: Response) => {
   try {
     console.log('👥 Verifying speaker attributions...');
-    const { transcript } = req.body;
+    let { transcript } = req.body;
 
     if (!transcript) {
       return res.status(400).json({ error: 'No transcript provided' });
@@ -270,9 +333,44 @@ app.post('/api/verify-speakers', async (req: Request, res: Response) => {
     
     console.log(`   Transcript length: ${transcript.length} characters`);
 
+    // Pre-process: Add missing labels after operator handoffs
+    const preprocessResult = preprocessMissingLabels(transcript);
+    transcript = preprocessResult.transcript;
+    const preprocessChanges = preprocessResult.changes;
+    
+    if (preprocessChanges.length > 0) {
+      console.log(`   🔧 Pre-processing fixes: ${preprocessChanges.join(', ')}`);
+    }
+
     const systemPrompt = `You are a transcript editor fixing speaker attribution errors in earnings calls.
 
-CRITICAL ERROR #1 - Wrong speaker after operator introduction:
+CRITICAL ERROR #1 - Missing speaker label after operator introduction:
+When operator introduces someone (analyst or executive), the VERY NEXT text MUST have a speaker label. If there's no label, you MUST add one.
+
+Example ERROR (Missing Label):
+<strong>Operator</strong>
+
+I will now turn the call over to Dr. Tony Han. Please go ahead Sir.
+
+Thank you. Hello everyone. Thank you for joining us today... [MISSING LABEL!]
+
+This is WRONG because:
+- Operator introduced "Dr. Tony Han" and said "Please go ahead Sir"
+- The next text "Thank you. Hello everyone..." has NO speaker label
+- This text is clearly Dr. Tony Han speaking (greeting after being introduced)
+
+CORRECT to:
+<strong>Operator</strong>
+
+I will now turn the call over to Dr. Tony Han. Please go ahead Sir.
+
+<strong>Dr. Tony Han</strong> (Chief Executive Officer)
+
+Thank you. Hello everyone. Thank you for joining us today...
+
+RULE: After ANY operator introduction ending with "Please go ahead", "Please proceed", or "Go ahead", the next text MUST have a speaker label. If missing, ADD the label for the person just introduced.
+
+CRITICAL ERROR #2 - Wrong speaker after operator introduction:
 When operator introduces an analyst, the VERY NEXT speaker MUST be that analyst, NOT a company executive.
 
 Example ERROR to fix:
@@ -304,31 +402,48 @@ Yeah, I mean our, you know, our product innovation... [CEO's answer]
 
 RULE: Person introduced by operator = next speaker. If you see an executive name there instead, DELETE it and insert the analyst's company label.
 
-CRITICAL ERROR #2 - Executive's answer under analyst's label:
+CRITICAL ERROR #3 - Executive's answer under analyst's label:
 When analyst asks question, executive's answer often appears under analyst's name.
 Look for: executive addressing analyst by name, "we/our" company perspective.
 
-CRITICAL ERROR #3 - Missing analyst label for follow-ups:
+CRITICAL ERROR #4 - Missing analyst label for follow-ups:
 When executive finishes answering and text continues with "Understood...", "Thanks...", "Great...", "Right..." → This is analyst asking follow-up.
+
+HANDOFF PHRASES TO WATCH FOR:
+- "Please go ahead" / "Please go ahead Sir" / "Please proceed" / "Go ahead"
+- "I will now turn the call over to [Name]"
+- "I will turn the call over to [Name]"
+- "turn the call over to [Name]"
+- "Our next question is from [Name]"
+
+After ANY of these phrases, the next text MUST have a speaker label. If it's missing, ADD it.
 
 LABEL FORMAT:
 - Analysts: <strong>Company Analyst</strong> (extract company from operator introduction)
-- Executives: <strong>Person Name</strong> (Title)
+- Executives: <strong>Person Name</strong> (Title) - extract title from operator introduction if mentioned
 
 RULES:
 - DO NOT change any words
 - ONLY add/fix speaker labels
 - Preserve all HTML formatting
+- If operator introduces someone and next text has no label, ADD the label
 
 OUTPUT FORMAT:
 Return the corrected transcript text, then add:
 ---CHANGES---
 Then list each fix you made, like:
+- Added missing label for "Dr. Tony Han" after operator introduced them
 - Changed "Wrong Name" to "Correct Label" after operator introduced them
 - Added "Company Analyst" label for follow-up question
 OR write: No errors found`;
 
     const userPrompt = `Please verify and correct ONLY the speaker attributions in this transcript. Do not change any words or formatting.
+
+Pay special attention to:
+1. Missing speaker labels after operator introductions (especially after "Please go ahead" or "turn the call over to")
+2. Wrong speaker labels after operator introductions
+3. Executive answers incorrectly under analyst labels
+4. Missing analyst labels for follow-up questions
 
 Transcript:
 ${transcript}`;
@@ -366,9 +481,23 @@ ${transcript}`;
       verifiedTranscript = verifiedTranscript.replace(/^\[Corrected transcript\]\s*/i, '');
       
       if (changesText && changesText !== 'No speaker attribution errors found.' && changesText !== 'No errors found') {
-        changesSummary = changesText;
+        // Combine pre-processing changes with AI changes
+        if (preprocessChanges.length > 0) {
+          changesSummary = preprocessChanges.join('; ') + '; ' + changesText;
+        } else {
+          changesSummary = changesText;
+        }
       } else {
-        changesSummary = 'No speaker attribution errors found';
+        if (preprocessChanges.length > 0) {
+          changesSummary = preprocessChanges.join('; ');
+        } else {
+          changesSummary = 'No speaker attribution errors found';
+        }
+      }
+    } else {
+      // No AI changes, but might have pre-processing changes
+      if (preprocessChanges.length > 0) {
+        changesSummary = preprocessChanges.join('; ');
       }
     }
 
